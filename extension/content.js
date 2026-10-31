@@ -14,23 +14,56 @@
     if (!url) return false;
     const lower = url.toLowerCase();
     return (
-      lower.includes("youtube.com/watch") ||
-      lower.includes("youtu.be/") ||
-      lower.includes("youtube.com/shorts") ||
-      lower.includes("facebook.com/watch") ||
-      lower.includes("facebook.com/reel") ||
-      lower.includes("facebook.com/share") ||
-      lower.includes("fb.watch/") ||
-      lower.includes("instagram.com/p/") ||
-      lower.includes("instagram.com/reel") ||
-      lower.includes("tiktok.com/@") ||
-      lower.includes("twitter.com/") ||
-      lower.includes("x.com/") ||
-      lower.includes("reddit.com/r/") ||
-      lower.includes("vimeo.com/") ||
-      lower.includes("twitch.tv/videos") ||
-      lower.includes("dailymotion.com/video")
+      lower.includes("facebook.com") ||
+      lower.includes("fb.watch") ||
+      lower.includes("fb.com") ||
+      lower.includes("youtube.com") ||
+      lower.includes("youtu.be") ||
+      lower.includes("instagram.com") ||
+      lower.includes("tiktok.com") ||
+      lower.includes("twitter.com") ||
+      lower.includes("x.com") ||
+      lower.includes("reddit.com") ||
+      lower.includes("redd.it") ||
+      lower.includes("vimeo.com") ||
+      lower.includes("twitch.tv") ||
+      lower.includes("dailymotion.com") ||
+      lower.includes("bilibili.com") ||
+      lower.includes("rumble.com")
     );
+  }
+
+  function getPortalVideoUrl(videoEl) {
+    const currentUrl = window.location.href;
+    const lower = currentUrl.toLowerCase();
+
+    if (lower.includes("facebook.com") || lower.includes("fb.watch")) {
+      if (videoEl) {
+        const article = videoEl.closest('[role="article"], [data-pagelet], [data-virtualized="false"], div[id^="mount_"]');
+        if (article) {
+          const links = article.querySelectorAll('a[href*="/videos/"], a[href*="/reel/"], a[href*="/watch/"], a[href*="story.php"], a[href*="permalink.php"], a[href*="/posts/"]');
+          for (const a of links) {
+            if (a.href && !a.href.includes("comment") && !a.href.includes("reaction")) {
+              return a.href;
+            }
+          }
+        }
+      }
+      return currentUrl;
+    }
+
+    if (lower.includes("instagram.com")) {
+      if (videoEl) {
+        const article = videoEl.closest("article, main");
+        if (article) {
+          const link = article.querySelector('a[href*="/p/"], a[href*="/reel/"]');
+          if (link && link.href) return link.href;
+        }
+      }
+      return currentUrl;
+    }
+
+    return currentUrl;
   }
 
   // 2. SPA Navigation Reset (YouTube, Facebook, Twitter, Reddit, etc.)
@@ -150,9 +183,38 @@
     } catch (e) {}
   }
 
-  // 4. Register Detected Media Stream with Smart Priority
+  // 4. Register Detected Media Stream with Smart Priority & Anti-Clutter Deduplication
   function addStream(stream, videoEl = null, prepend = false) {
     if (!stream || !stream.url) return;
+
+    const onPortal = isPopularMediaPortal(window.location.href);
+    if (onPortal && !stream.isMasterStream) {
+      const lower = stream.url.toLowerCase();
+      // Drop raw fragments from video portals (they have no audio or are corrupted slice pieces)
+      if (
+        lower.includes("fbcdn.net") ||
+        lower.includes("googlevideo.com") ||
+        lower.includes("byteoversea.com") ||
+        lower.includes("tiktokcdn.com")
+      ) {
+        return;
+      }
+    }
+
+    // Drop numbered chunks, transport slices and byte-range slices
+    const lowerUrl = stream.url.toLowerCase();
+    if (
+      lowerUrl.includes("bytestart=") ||
+      lowerUrl.includes("byteend=") ||
+      lowerUrl.includes("&range=") ||
+      lowerUrl.includes("?range=") ||
+      lowerUrl.includes("&sq=") ||
+      lowerUrl.includes("initsegment") ||
+      lowerUrl.includes(".m4s")
+    ) {
+      return;
+    }
+
     if (!stream.referer) stream.referer = window.location.href;
     if (!stream.origin) {
       try {
@@ -187,6 +249,19 @@
       return;
     }
 
+    // Deduplicate by resolution tag to prevent showing multiple redundant streams for the same quality
+    if (stream.resTag && !stream.isMasterStream) {
+      const sameRes = capturedStreams.find((s) => s.resTag === stream.resTag && !s.isMasterStream);
+      if (sameRes) {
+        if (stream.size && stream.size > (sameRes.size || 0)) {
+          sameRes.url = stream.url;
+          sameRes.size = stream.size;
+          updateAllOverlays();
+        }
+        return;
+      }
+    }
+
     const isDirectMedia = stream.url.includes(".m3u8") ||
                           stream.url.includes(".mpd") ||
                           stream.url.includes(".mp4") ||
@@ -194,13 +269,18 @@
                           stream.url.includes(".mkv") ||
                           (stream.type && stream.type.startsWith("video/"));
 
-    if (prepend || isDirectMedia) {
+    if (stream.isMasterStream) {
       capturedStreams.unshift(stream);
       selectedStreamUrls.clear();
       selectedStreamUrls.add(stream.url);
+    } else if (prepend || isDirectMedia) {
+      capturedStreams.push(stream);
+      if (selectedStreamUrls.size === 0) {
+        selectedStreamUrls.add(stream.url);
+      }
     } else {
       capturedStreams.push(stream);
-      if (capturedStreams.length === 1) {
+      if (selectedStreamUrls.size === 0) {
         selectedStreamUrls.add(stream.url);
       }
     }
@@ -264,20 +344,21 @@
       attachOverlay(el, el);
     });
 
-    // Only offer page URL on known platforms where yt-dlp has dedicated extractors
+    // Only offer clean merged video URL on known platforms where media stream downloader handles audio+video muxing
     if (candidates.length > 0 && isPopularMediaPortal(window.location.href)) {
-      const pageUrl = window.location.href;
       const primaryVideo = candidates.find((c) => c.tagName && c.tagName.toLowerCase() === "video");
-      const pRes = detectResolution(primaryVideo, pageUrl);
-      if (!capturedStreams.some((s) => s.url === pageUrl)) {
+      const portalMediaUrl = getPortalVideoUrl(primaryVideo);
+      const pRes = detectResolution(primaryVideo, portalMediaUrl);
+      if (!capturedStreams.some((s) => s.isMasterStream)) {
         addStream({
-          url: pageUrl,
+          url: portalMediaUrl,
           type: "video/mp4",
-          label: (document.title || "Web Video") + " [Merged Video+Audio]",
-          resTag: pRes ? pRes.tag : "",
-          resolution: pRes ? pRes.full : "",
-          referer: pageUrl
-        }, primaryVideo, capturedStreams.length === 0);
+          label: "🎬 Download Complete Video (Full HD + Audio)",
+          resTag: (pRes && pRes.tag) ? pRes.tag : "1080p",
+          resolution: (pRes && pRes.full) ? pRes.full : "Full HD with Audio",
+          referer: window.location.href,
+          isMasterStream: true
+        }, primaryVideo, true);
       }
     }
   }
@@ -517,10 +598,12 @@
 
       quickDlBtn.addEventListener("click", (e) => {
         e.stopPropagation();
-        const baseTitle = getCleanTitle();
+        const baseTitle = getCleanTitle(document.querySelector("video"));
+        const ext = stream.type && stream.type.includes("audio") ? ".mp3" : ".mp4";
+        const filename = baseTitle.toLowerCase().endsWith(ext) ? baseTitle : `${baseTitle}${ext}`;
         sendBatchToPDM([{
           url: stream.url,
-          filename: `${baseTitle}.mp4`,
+          filename: filename,
           auto_start: true,
           referer: stream.referer || window.location.href,
           origin: stream.origin || window.location.origin,
@@ -555,23 +638,29 @@
   function executeSelectedDownloads(autoStart) {
     const targets = capturedStreams.filter((s) => selectedStreamUrls.has(s.url));
     if (targets.length === 0) {
-      showToast("Please select at least one stream to download.");
-      return;
+      if (capturedStreams.length > 0) {
+        targets.push(capturedStreams[0]);
+      } else {
+        showToast("Please select at least one stream to download.");
+        return;
+      }
     }
 
-    const baseTitle = getCleanTitle();
-    const items = targets.map((s, idx) => {
-      let suffix = targets.length > 1 ? `_part${idx + 1}` : "";
-      return {
-        url: s.url,
-        filename: `${baseTitle}${suffix}.mp4`,
-        auto_start: autoStart,
-        referer: s.referer || window.location.href,
-        origin: s.origin || window.location.origin,
-        user_agent: s.userAgent || navigator.userAgent,
-        cookies: s.cookies || ""
-      };
-    });
+    // Default to the single best selected stream to prevent downloading fragmented split pieces of the same video
+    const target = targets[0];
+    const baseTitle = getCleanTitle(document.querySelector("video"));
+    const ext = target.type && target.type.includes("audio") ? ".mp3" : ".mp4";
+    const filename = baseTitle.toLowerCase().endsWith(ext) ? baseTitle : `${baseTitle}${ext}`;
+
+    const items = [{
+      url: target.url,
+      filename: filename,
+      auto_start: autoStart,
+      referer: target.referer || window.location.href,
+      origin: target.origin || window.location.origin,
+      user_agent: target.userAgent || navigator.userAgent,
+      cookies: target.cookies || ""
+    }];
 
     sendBatchToPDM(items, autoStart);
   }
@@ -627,8 +716,29 @@
     }, 4000);
   }
 
-  function getCleanTitle() {
-    return (document.title || "video").replace(/[<>:"/\\|?*]/g, "_").trim().substring(0, 120);
+  function getCleanTitle(videoEl = null) {
+    let title = "";
+    if (videoEl) {
+      const container = videoEl.closest('[role="article"], [data-pagelet], article, .post');
+      if (container) {
+        const textEl = container.querySelector('[data-ad-preview="message"], [data-testid="post_message"], h1, h2, h3, p');
+        if (textEl && textEl.innerText && textEl.innerText.trim().length > 3) {
+          title = textEl.innerText.trim().split("\n")[0];
+        }
+      }
+    }
+    if (!title) {
+      title = (document.title || "").trim();
+    }
+    const lower = title.toLowerCase();
+    const genericWords = ["facebook", "youtube", "instagram", "video", "reel", "watch", "tiktok", "twitter"];
+    if (!title || genericWords.some((w) => lower === w || lower.startsWith(`${w} -`) || lower.startsWith(`${w} :`))) {
+      const now = new Date();
+      const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}`;
+      const prefix = document.title ? document.title.split("-")[0].trim() : "Video";
+      title = `${prefix}_${dateStr}`;
+    }
+    return title.replace(/[<>:"/\\|?*\n\r\t]/g, "_").trim().substring(0, 100) || "Video";
   }
 
   function formatBytes(bytes) {

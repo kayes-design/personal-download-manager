@@ -258,7 +258,7 @@ class DownloadTask:
                 resolution_callback=lambda res: setattr(self, "resolution", res),
                 proxy=self.proxy,
             )
-            if os.path.exists(final_file):
+            if os.path.exists(final_file) and os.path.getsize(final_file) > 0:
                 self.downloaded_bytes = os.path.getsize(final_file)
                 self.total_bytes = self.downloaded_bytes
                 self.destination_path = final_file
@@ -266,6 +266,8 @@ class DownloadTask:
                 self.db.update_download_file_info(self.task_id, self.filename, self.destination_path)
                 self.db.update_download_progress(self.task_id, self.downloaded_bytes, self.total_bytes)
                 self._set_status(DownloadStatus.COMPLETED)
+            else:
+                raise RuntimeError("Media stream extraction produced an empty or inaccessible file.")
         except InterruptedError:
             self._set_status(DownloadStatus.PAUSED)
             raise

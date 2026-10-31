@@ -7,9 +7,11 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Set
+from urllib.parse import urlparse
 import imageio_ffmpeg
 import yt_dlp
 import yt_dlp.extractor
@@ -125,6 +127,37 @@ def get_ffmpeg_path() -> Optional[str]:
     return shutil.which("ffmpeg")
 
 
+def create_temp_netscape_cookiefile(cookies_str: str, url: str) -> Optional[str]:
+    """Format raw cookie string into temporary Netscape cookiefile for yt-dlp authenticated sessions."""
+    if not cookies_str:
+        return None
+    try:
+        host = urlparse(url).hostname or "facebook.com"
+        domains = [host]
+        parts = host.split(".")
+        if len(parts) >= 2:
+            domains.append(f".{parts[-2]}.{parts[-1]}")
+        if not host.startswith("."):
+            domains.append(f".{host}")
+
+        tf = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", prefix="pdm_cookies_", delete=False)
+        tf.write("# Netscape HTTP Cookie File\n")
+        pairs = cookies_str.split(";")
+        for p in pairs:
+            p = p.strip()
+            if "=" in p:
+                k, v = p.split("=", 1)
+                k = k.strip()
+                v = v.strip()
+                if k and v:
+                    for d in set(domains):
+                        tf.write(f"{d}\tTRUE\t/\tTRUE\t2147483647\t{k}\t{v}\n")
+        tf.close()
+        return tf.name
+    except Exception:
+        return None
+
+
 class MediaStreamDownloader:
     """Universal media downloader for all video/audio websites with automatic stream muxing."""
 
@@ -214,6 +247,10 @@ class MediaStreamDownloader:
             },
         }
 
+        cookie_file = create_temp_netscape_cookiefile(cookies, target_url) if cookies else None
+        if cookie_file and os.path.exists(cookie_file):
+            ydl_opts["cookiefile"] = cookie_file
+
         if cookies:
             ydl_opts["http_headers"]["Cookie"] = cookies
         if referer:
@@ -264,6 +301,12 @@ class MediaStreamDownloader:
             raise
         except Exception as e:
             yt_error = e
+        finally:
+            if cookie_file and os.path.exists(cookie_file):
+                try:
+                    os.remove(cookie_file)
+                except Exception:
+                    pass
 
         # If yt-dlp succeeded and output file exists
         expected_file = os.path.join(dest_dir, f"{dest_name}.mp4")

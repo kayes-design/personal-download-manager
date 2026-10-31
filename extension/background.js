@@ -158,12 +158,22 @@ chrome.webRequest.onHeadersReceived.addListener(
                        lowerUrl.includes("hlsplaylist") ||
                        lowerUrl.includes("/manifest");
 
-    // Filter out repetitive small transport segments (.m4s, segment_001.ts) unless it's a manifest
+    // Filter out repetitive small transport segments (.m4s, ts chunks, byte-range slices, YouTube/Facebook chunks) unless it's a manifest
     const isNumberedSegment = /\.m4s(\?|$)/i.test(lowerUrl) ||
                               /\b(seg|segment|chunk|frag|piece)[-_]?\d+\.ts(\?|$)/i.test(lowerUrl) ||
                               /\/\d+\.ts(\?|$)/i.test(lowerUrl) ||
                               lowerUrl.includes("/segment/") ||
-                              lowerUrl.includes("/chunk/");
+                              lowerUrl.includes("/chunk/") ||
+                              lowerUrl.includes("bytestart=") ||
+                              lowerUrl.includes("byteend=") ||
+                              lowerUrl.includes("&range=") ||
+                              lowerUrl.includes("?range=") ||
+                              lowerUrl.includes("&sq=") ||
+                              lowerUrl.includes("?sq=") ||
+                              lowerUrl.includes("initsegment") ||
+                              lowerUrl.includes("initialization") ||
+                              lowerUrl.includes("storyboard") ||
+                              lowerUrl.includes("live-preview");
 
     if (isNumberedSegment && !isManifest) {
       return;
@@ -186,6 +196,12 @@ chrome.webRequest.onHeadersReceived.addListener(
           totalRangeLength = parseInt(match[1], 10);
         }
       }
+    }
+
+    // Ignore tiny audio pings, preview loops, tracking blobs (< 250 KB) unless it's an HLS/DASH manifest
+    const exactOrChunkSize = totalRangeLength > 0 ? totalRangeLength : contentLength;
+    if (!isManifest && exactOrChunkSize > 0 && exactOrChunkSize < 250000) {
+      return;
     }
 
     const isVideoType = contentType.startsWith("video/") ||
