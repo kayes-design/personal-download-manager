@@ -234,6 +234,7 @@ class DatabaseManager:
                     cookies = CASE WHEN ? != '' THEN ? ELSE cookies END,
                     referer = CASE WHEN ? != '' THEN ? ELSE referer END,
                     error_message = NULL,
+                    status = 'Queued',
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,

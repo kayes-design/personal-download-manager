@@ -92,6 +92,13 @@ class DownloadProgressDialog(QDialog):
 
         # Action Buttons
         btn_layout = QHBoxLayout()
+
+        self.refresh_addr_btn = QPushButton("🔄 Refresh Address")
+        self.refresh_addr_btn.setToolTip("Update expired link and resume downloading without losing progress")
+        self.refresh_addr_btn.setVisible(False)
+        self.refresh_addr_btn.clicked.connect(self._open_refresh_dialog)
+        btn_layout.addWidget(self.refresh_addr_btn)
+
         btn_layout.addStretch()
 
         self.pause_resume_btn = QPushButton("Pause")
@@ -160,12 +167,22 @@ class DownloadProgressDialog(QDialog):
             if task.status == DownloadStatus.DOWNLOADING:
                 self.pause_resume_btn.setText("Pause")
                 self.pause_resume_btn.setEnabled(True)
+                self.refresh_addr_btn.setVisible(False)
             elif task.status == DownloadStatus.PAUSED:
                 self.pause_resume_btn.setText("Resume")
                 self.pause_resume_btn.setEnabled(True)
+                self.refresh_addr_btn.setVisible(False)
+            elif task.status == DownloadStatus.ERROR:
+                self.pause_resume_btn.setText("Resume")
+                self.pause_resume_btn.setEnabled(True)
+                self.refresh_addr_btn.setVisible(True)
+                if task.error_message:
+                    self.status_label.setText(f"Error: {task.error_message[:45]}..." if len(task.error_message) > 45 else f"Error: {task.error_message}")
+                    self.status_label.setStyleSheet("color: #ef4444; font-weight: bold;")
             elif task.status == DownloadStatus.COMPLETED:
                 self.pause_resume_btn.setEnabled(False)
                 self.pause_resume_btn.setText("Completed")
+                self.refresh_addr_btn.setVisible(False)
                 if self.coordinator.db.get_setting("auto_close_progress", "1") == "1":
                     self.close()
         else:
@@ -186,9 +203,27 @@ class DownloadProgressDialog(QDialog):
                 if record["status"] == "Paused":
                     self.pause_resume_btn.setText("Resume")
                     self.pause_resume_btn.setEnabled(True)
+                    self.refresh_addr_btn.setVisible(False)
+                elif record["status"] == "Error":
+                    self.pause_resume_btn.setText("Resume")
+                    self.pause_resume_btn.setEnabled(True)
+                    self.refresh_addr_btn.setVisible(True)
+                    err_msg = record.get("error_message") or ""
+                    if err_msg:
+                        self.status_label.setText(f"Error: {err_msg[:45]}..." if len(err_msg) > 45 else f"Error: {err_msg}")
+                        self.status_label.setStyleSheet("color: #ef4444; font-weight: bold;")
                 elif record["status"] == "Completed":
                     self.pause_resume_btn.setText("Completed")
                     self.pause_resume_btn.setEnabled(False)
+                    self.refresh_addr_btn.setVisible(False)
+
+    def _open_refresh_dialog(self):
+        """Open dialog to refresh expired or broken download link without losing progress."""
+        record = self.coordinator.db.get_download(self.task_id)
+        if record:
+            from pdm.gui.refresh_address_dialog import RefreshAddressDialog
+            dlg = RefreshAddressDialog(record, self.coordinator.db, self.coordinator, self)
+            dlg.exec()
 
     def _toggle_pause_resume(self):
         task = self.coordinator.get_active_task(self.task_id)

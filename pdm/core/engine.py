@@ -301,6 +301,11 @@ class DownloadTask:
                     raise ConnectionError(f"Failed to connect to server: {ex}")
 
             if resp.status_code not in (200, 206):
+                if resp.status_code in (401, 403, 410):
+                    raise ConnectionError(
+                        f"Download link expired or access forbidden (HTTP {resp.status_code}). "
+                        "Click 'Refresh Address' to update URL and resume."
+                    )
                 raise ConnectionError(f"Server returned HTTP status {resp.status_code}")
 
             # Inspect headers
@@ -534,6 +539,11 @@ class DownloadTask:
             with httpx.Client(follow_redirects=True, timeout=30.0) as client:
                 with client.stream("GET", self.url, headers=headers) as resp:
                     if self.supports_range and resp.status_code not in (200, 206):
+                        if resp.status_code in (401, 403, 410):
+                            raise ConnectionError(
+                                f"Download link expired (HTTP {resp.status_code}). "
+                                "Click 'Refresh Address' to update URL and resume."
+                            )
                         raise ConnectionError(f"Unexpected status {resp.status_code} for range request")
 
                     for chunk in resp.iter_bytes(chunk_size=32768):

@@ -113,3 +113,17 @@ def test_delete_completed(db):
     assert db.get_download(id3) is None
     assert db.get_download(id2) is not None
     assert db.get_download(id2)["status"] == "Downloading"
+
+
+def test_update_download_address(db):
+    task_id = db.create_download("https://example.com/expired-token-123", "C:/tmp/file.iso", "file.iso")
+    db.set_download_status(task_id, "Error", "HTTP 403 Forbidden")
+
+    # Refresh URL with new token
+    db.update_download_address(task_id, "https://example.com/new-valid-token-456", cookies="session=abc", referer="https://example.com")
+    updated = db.get_download(task_id)
+    assert updated["url"] == "https://example.com/new-valid-token-456"
+    assert updated["status"] == "Queued"
+    assert updated["error_message"] is None
+    assert updated["cookies"] == "session=abc"
+    assert updated["referer"] == "https://example.com"
