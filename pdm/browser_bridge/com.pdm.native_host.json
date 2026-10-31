@@ -1,0 +1,10 @@
+{
+  "name": "com.pdm.native_host",
+  "description": "Personal Download Manager Native Messaging Host",
+  "path": "C:\\Users\\MrKayes\\.gemini\\antigravity\\scratch\\personal-download-manager\\pdm_host.bat",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://flgedopgbfolfficdllcjacamhgkhkga/",
+    "chrome-extension://jdkngeepecifohmmoeldklojellkdgmm/"
+  ]
+}

@@ -1,0 +1,11 @@
+dist/
+build/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.sqlite
+*.db
+*.part
+*.log
+.venv/
+venv/

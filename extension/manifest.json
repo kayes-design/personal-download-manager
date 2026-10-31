@@ -1,0 +1,45 @@
+{
+  "manifest_version": 3,
+  "name": "Personal Download Manager (PDM)",
+  "version": "1.2.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAiSWcsDiq3hzM8TEvYLUVgTTgUrFLGG/+6uLadkC9TcHh8H3AjN9UFaUi840ifdCMLHLduIsbW9eT70onIwACchWCX7zvbjwa8m/xY6neYBvFcVci7NoY2+2gP6uGZC5u/IbEBHerYbhOx0fVuY6On45ClXfQ26o/VkVXQI7td0I1aaKxeW/uo7TJvY/ZGgYIRKcPhW1Z7iHu3S2YFmBcJ+GfcnGqXMWcRA9U5s+gJn9d5JycJA/zIxVM7bIoUFik0h6qOxhKlCmcZcnIH6wE2irzrgVzR+s/ddU/bKCPDxtSb/wBaNIzQFvO1uk+BUbIeEW3JGXAI43OwShaRWGQ2wIDAQAB",
+  "description": "High-performance download manager with dynamic video player grabber and multi-connection engine.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "Personal Download Manager (PDM)",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "permissions": [
+    "contextMenus",
+    "nativeMessaging",
+    "downloads",
+    "webRequest",
+    "storage",
+    "tabs",
+    "cookies"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "css": ["floating.css"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ]
+}
