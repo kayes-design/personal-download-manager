@@ -342,6 +342,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const items = message.items || [];
       const defaultReferer = (sender.tab && sender.tab.url) || "";
       const defaultOrigin = sender.tab && sender.tab.url ? new URL(sender.tab.url).origin : "";
+      const activeProxy = await getActiveBrowserProxy();
 
       for (const it of items) {
         if (!it.cookies && it.url) {
@@ -355,6 +356,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         if (!it.user_agent) {
           it.user_agent = navigator.userAgent;
+        }
+        if (!it.proxy && activeProxy) {
+          it.proxy = activeProxy;
         }
       }
 
@@ -379,9 +383,41 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
-// 7. Send message via Native Messaging host to PDM desktop application
+// 7. Inspect active browser proxy/VPN configuration
+async function getActiveBrowserProxy() {
+  return new Promise((resolve) => {
+    if (!chrome.proxy || !chrome.proxy.settings) {
+      resolve("");
+      return;
+    }
+    try {
+      chrome.proxy.settings.get({ incognito: false }, (config) => {
+        try {
+          if (config && config.value) {
+            const rules = config.value.rules;
+            if (rules) {
+              const p = rules.singleProxy || rules.proxyForHttps || rules.proxyForHttp;
+              if (p && p.host) {
+                const scheme = p.scheme || "http";
+                const port = p.port ? `:${p.port}` : "";
+                resolve(`${scheme}://${p.host}${port}`);
+                return;
+              }
+            }
+          }
+        } catch (e) {}
+        resolve("");
+      });
+    } catch (err) {
+      resolve("");
+    }
+  });
+}
+
+// 8. Send message via Native Messaging host to PDM desktop application
 async function sendToPDM(url, filename, autoStart = true, referer = "") {
   const cookies = await getCookiesForUrl(url);
+  const proxy = await getActiveBrowserProxy();
   let origin = "";
   try {
     if (referer && referer.startsWith("http")) {
@@ -399,7 +435,8 @@ async function sendToPDM(url, filename, autoStart = true, referer = "") {
       cookies: cookies,
       referer: referer,
       user_agent: navigator.userAgent,
-      origin: origin
+      origin: origin,
+      proxy: proxy
     },
     (response) => {
       if (chrome.runtime.lastError) {

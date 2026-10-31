@@ -142,6 +142,7 @@ class MediaStreamDownloader:
         progress_callback: Optional[Callable[[int, int, float, Optional[int]], None]] = None,
         is_stopped_callback: Optional[Callable[[], bool]] = None,
         resolution_callback: Optional[Callable[[str], None]] = None,
+        proxy: Optional[str] = None,
     ) -> str:
         """Download video + audio from any site and merge into a single playable MP4 file.
 
@@ -219,6 +220,8 @@ class MediaStreamDownloader:
             ydl_opts["http_headers"]["Referer"] = referer
         if origin:
             ydl_opts["http_headers"]["Origin"] = origin
+        if proxy:
+            ydl_opts["proxy"] = proxy
 
         if self.ffmpeg_path:
             ydl_opts["ffmpeg_location"] = self.ffmpeg_path
@@ -289,6 +292,7 @@ class MediaStreamDownloader:
                     progress_callback=progress_callback,
                     is_stopped_callback=is_stopped_callback,
                     resolution_callback=resolution_callback,
+                    proxy=proxy,
                 )
             except InterruptedError:
                 raise
@@ -313,6 +317,7 @@ class MediaStreamDownloader:
         progress_callback: Optional[Callable[[int, int, float, Optional[int]], None]] = None,
         is_stopped_callback: Optional[Callable[[], bool]] = None,
         resolution_callback: Optional[Callable[[str], None]] = None,
+        proxy: Optional[str] = None,
     ) -> str:
         """Direct stream capture via bundled FFmpeg for HLS (.m3u8), DASH (.mpd), and resilient direct streams."""
         ffmpeg_exe = self.ffmpeg_path or get_ffmpeg_path()
@@ -341,13 +346,17 @@ class MediaStreamDownloader:
         cmd = [
             ffmpeg_exe,
             "-y",
+        ]
+        if proxy and proxy.startswith("http"):
+            cmd.extend(["-http_proxy", proxy])
+        cmd.extend([
             "-headers", headers_arg,
             "-i", url,
             "-c", "copy",
             "-bsf:a", "aac_adtstoasc",
             "-movflags", "+faststart",
             destination_path,
-        ]
+        ])
 
         creation_flags = 0x08000000 if sys.platform == "win32" else 0  # CREATE_NO_WINDOW
 

@@ -24,7 +24,8 @@
     "webRequest",
     "storage",
     "tabs",
-    "cookies"
+    "cookies",
+    "proxy"
   ],
   "host_permissions": [
     "http://*/*",

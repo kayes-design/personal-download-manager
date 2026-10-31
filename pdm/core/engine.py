@@ -84,7 +84,8 @@ class DownloadTask:
         cookies: str = "",
         referer: str = "",
         user_agent: str = "",
-        origin: str = ""
+        origin: str = "",
+        proxy: Optional[str] = None
     ):
         self.task_id = task_id
         self.url = url
@@ -99,6 +100,7 @@ class DownloadTask:
         self.referer = referer
         self.user_agent = user_agent
         self.origin = origin
+        self.proxy = proxy or None
 
         self.status = DownloadStatus.QUEUED
         self.total_bytes: int = -1
@@ -254,6 +256,7 @@ class DownloadTask:
                 progress_callback=on_progress,
                 is_stopped_callback=self.is_stopped,
                 resolution_callback=lambda res: setattr(self, "resolution", res),
+                proxy=self.proxy,
             )
             if os.path.exists(final_file):
                 self.downloaded_bytes = os.path.getsize(final_file)
@@ -283,7 +286,7 @@ class DownloadTask:
         if self.referer:
             base_headers["Referer"] = self.referer
 
-        with httpx.Client(follow_redirects=True, timeout=15.0) as client:
+        with httpx.Client(follow_redirects=True, timeout=15.0, proxy=self.proxy) as client:
             resp = None
             try:
                 # First try HEAD with standard browser headers
@@ -536,7 +539,7 @@ class DownloadTask:
             headers["Range"] = f"bytes={req_start}-{req_end}"
 
         with open(segment.temp_filepath, "ab") as f:
-            with httpx.Client(follow_redirects=True, timeout=30.0) as client:
+            with httpx.Client(follow_redirects=True, timeout=30.0, proxy=self.proxy) as client:
                 with client.stream("GET", self.url, headers=headers) as resp:
                     if self.supports_range and resp.status_code not in (200, 206):
                         if resp.status_code in (401, 403, 410):

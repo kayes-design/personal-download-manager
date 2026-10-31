@@ -272,6 +272,14 @@ class DownloadCoordinator:
                 if task_id in self._active_tasks:
                     continue
 
+                proxy_mode = self.db.get_setting("proxy_mode", "auto")
+                if proxy_mode == "direct":
+                    effective_proxy = ""
+                elif proxy_mode == "manual":
+                    effective_proxy = self.db.get_setting("manual_proxy", "")
+                else:  # auto
+                    effective_proxy = item.get("proxy") or self.db.get_setting("manual_proxy", "")
+
                 task = DownloadTask(
                     task_id=task_id,
                     url=item["url"],
@@ -285,7 +293,8 @@ class DownloadCoordinator:
                     cookies=item.get("cookies", ""),
                     referer=item.get("referer", ""),
                     user_agent=item.get("user_agent", ""),
-                    origin=item.get("origin", "")
+                    origin=item.get("origin", ""),
+                    proxy=effective_proxy or None
                 )
                 self._active_tasks[task_id] = task
 

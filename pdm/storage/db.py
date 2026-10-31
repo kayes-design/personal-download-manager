@@ -83,7 +83,8 @@ class DatabaseManager:
                 ("cookies", "TEXT DEFAULT ''"),
                 ("referer", "TEXT DEFAULT ''"),
                 ("user_agent", "TEXT DEFAULT ''"),
-                ("origin", "TEXT DEFAULT ''")
+                ("origin", "TEXT DEFAULT ''"),
+                ("proxy", "TEXT DEFAULT ''")
             ]:
                 try:
                     conn.execute(f"ALTER TABLE downloads ADD COLUMN {col_name} {col_type}")
@@ -104,15 +105,16 @@ class DatabaseManager:
         cookies: str = "",
         referer: str = "",
         user_agent: str = "",
-        origin: str = ""
+        origin: str = "",
+        proxy: str = ""
     ) -> int:
         with self._lock, self._get_connection() as conn:
             cur = conn.execute(
                 """
-                INSERT INTO downloads (url, destination_path, filename, category, connections_count, status, description, queue_name, cookies, referer, user_agent, origin)
-                VALUES (?, ?, ?, ?, ?, 'Queued', ?, ?, ?, ?, ?, ?)
+                INSERT INTO downloads (url, destination_path, filename, category, connections_count, status, description, queue_name, cookies, referer, user_agent, origin, proxy)
+                VALUES (?, ?, ?, ?, ?, 'Queued', ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (url, destination_path, filename, category, connections_count, description, queue_name, cookies, referer, user_agent, origin)
+                (url, destination_path, filename, category, connections_count, description, queue_name, cookies, referer, user_agent, origin, proxy)
             )
             return cur.lastrowid
 

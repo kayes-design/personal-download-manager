@@ -110,13 +110,14 @@ def handle_download_item(db: DatabaseManager, default_dir: str, default_conns: i
     referer = item.get("referer", "")
     user_agent = item.get("user_agent", "")
     origin = item.get("origin", "")
+    proxy = item.get("proxy", "")
     with db._lock, db._get_connection() as conn:
         cur = conn.execute(
             """
-            INSERT INTO downloads (url, destination_path, filename, category, connections_count, status, cookies, referer, user_agent, origin)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO downloads (url, destination_path, filename, category, connections_count, status, cookies, referer, user_agent, origin, proxy)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (valid_url, final_path, os.path.basename(final_path), cat, default_conns, initial_status, cookies, referer, user_agent, origin)
+            (valid_url, final_path, os.path.basename(final_path), cat, default_conns, initial_status, cookies, referer, user_agent, origin, proxy)
         )
         return cur.lastrowid
 

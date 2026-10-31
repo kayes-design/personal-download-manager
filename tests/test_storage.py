@@ -127,3 +127,15 @@ def test_update_download_address(db):
     assert updated["error_message"] is None
     assert updated["cookies"] == "session=abc"
     assert updated["referer"] == "https://example.com"
+
+
+def test_download_proxy_support(db):
+    task_id = db.create_download(
+        url="https://example.com/vpn-geo-locked.zip",
+        destination_path="C:/tmp/vpn-geo-locked.zip",
+        filename="vpn-geo-locked.zip",
+        proxy="http://127.0.0.1:8080"
+    )
+    task = db.get_download(task_id)
+    assert task["proxy"] == "http://127.0.0.1:8080"
+

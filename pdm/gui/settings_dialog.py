@@ -309,6 +309,24 @@ class SettingsDialog(QDialog):
         lim_form.addRow("Inactivity Trigger Timeout:", self.smart_idle_timeout_spin)
         layout.addWidget(lim_grp)
 
+        # Proxy & Browser VPN Settings
+        proxy_grp = QGroupBox("🌐 Proxy & Browser VPN Settings")
+        proxy_form = QFormLayout(proxy_grp)
+        proxy_form.setSpacing(10)
+
+        self.proxy_mode_combo = QComboBox()
+        self.proxy_mode_combo.addItems([
+            "⚡ Auto (Follow Browser VPN / Proxy - Solves 403 blocks)",
+            "🔌 Direct Connection (Bypass VPN / Proxy)",
+            "🛠️ Manual Proxy (HTTP / HTTPS / SOCKS5)"
+        ])
+        proxy_form.addRow("Proxy Mode:", self.proxy_mode_combo)
+
+        self.manual_proxy_edit = QLineEdit()
+        self.manual_proxy_edit.setPlaceholderText("http://127.0.0.1:8080 or socks5://127.0.0.1:1080")
+        proxy_form.addRow("Manual Proxy URL:", self.manual_proxy_edit)
+        layout.addWidget(proxy_grp)
+
         layout.addStretch()
         self.tabs.addTab(tab, "Connection")
 
@@ -444,6 +462,14 @@ class SettingsDialog(QDialog):
         self.speed_spin.setValue(max(50, limit_kb if limit_kb > 0 else 500))
         self.smart_idle_cb.setChecked(self.db.get_setting("smart_idle_boost", "1") == "1")
         self.smart_idle_timeout_spin.setValue(int(self.db.get_setting("smart_idle_timeout_sec", "60")))
+        proxy_mode = self.db.get_setting("proxy_mode", "auto")
+        if proxy_mode == "direct":
+            self.proxy_mode_combo.setCurrentIndex(1)
+        elif proxy_mode == "manual":
+            self.proxy_mode_combo.setCurrentIndex(2)
+        else:
+            self.proxy_mode_combo.setCurrentIndex(0)
+        self.manual_proxy_edit.setText(self.db.get_setting("manual_proxy", ""))
 
         # 5. Downloads
         self.show_start_dlg_cb.setChecked(self.db.get_setting("show_start_dlg", "1") == "1")
@@ -487,6 +513,10 @@ class SettingsDialog(QDialog):
         self.db.set_setting("global_speed_limit", str(limit_val))
         self.db.set_setting("smart_idle_boost", "1" if self.smart_idle_cb.isChecked() else "0")
         self.db.set_setting("smart_idle_timeout_sec", str(self.smart_idle_timeout_spin.value()))
+        proxy_idx = self.proxy_mode_combo.currentIndex()
+        mode_str = "direct" if proxy_idx == 1 else ("manual" if proxy_idx == 2 else "auto")
+        self.db.set_setting("proxy_mode", mode_str)
+        self.db.set_setting("manual_proxy", self.manual_proxy_edit.text().strip())
 
         # 5. Downloads
         self.db.set_setting("show_start_dlg", "1" if self.show_start_dlg_cb.isChecked() else "0")
