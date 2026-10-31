@@ -372,7 +372,12 @@
     const overlay = document.createElement("div");
     overlay.className = "pdm-video-overlay";
     overlay.innerHTML = `
-      <div class="pdm-grab-pill" title="Download with Personal Download Manager">
+      <div class="pdm-grab-pill" title="Personal Download Manager">
+        <div class="pdm-grab-handle" title="Drag to reposition panel">
+          <svg viewBox="0 0 24 24" class="pdm-drag-icon">
+            <path d="M9 5h2v2H9V5zm0 6h2v2H9v-2zm0 6h2v2H9v-2zm4-12h2v2h-2V5zm0 6h2v2h-2v-2zm0 6h2v2h-2v-2z"/>
+          </svg>
+        </div>
         <div class="pdm-grab-action" title="Download this video with PDM">
           <svg class="pdm-grab-icon" viewBox="0 0 24 24" style="width:14px;height:14px;fill:currentColor;">
             <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
@@ -381,6 +386,7 @@
           <span class="pdm-stream-badge" style="display:none;background:#2563eb;color:#fff;border-radius:10px;padding:1px 5px;font-size:10px;margin-left:4px;">0</span>
         </div>
         <div class="pdm-grab-dropdown" title="Select Quality / Streams">▼</div>
+        <div class="pdm-grab-close" title="Hide for this video">✕</div>
       </div>
       <div class="pdm-stream-menu">
         <div class="pdm-menu-header">
@@ -402,12 +408,77 @@
     document.body.appendChild(overlay);
     overlays.set(videoEl, overlay);
 
+    const grabHandle = overlay.querySelector(".pdm-grab-handle");
     const grabAction = overlay.querySelector(".pdm-grab-action");
     const grabDropdown = overlay.querySelector(".pdm-grab-dropdown");
+    const grabClose = overlay.querySelector(".pdm-grab-close");
     const menu = overlay.querySelector(".pdm-stream-menu");
     const selectAllBtn = overlay.querySelector(".pdm-select-all");
     const dlNowBtn = overlay.querySelector(".pdm-action-download");
     const queueBtn = overlay.querySelector(".pdm-action-queue");
+
+    let customOffsetX = null;
+    let customOffsetY = null;
+    let isDragging = false;
+    let startX = 0, startY = 0;
+    let startLeft = 0, startTop = 0;
+
+    // Drag to reposition floater
+    grabHandle.addEventListener("mousedown", (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      isDragging = true;
+      startX = e.clientX;
+      startY = e.clientY;
+
+      const oRect = overlay.getBoundingClientRect();
+      startLeft = oRect.left + window.scrollX;
+      startTop = oRect.top + window.scrollY;
+
+      document.body.style.userSelect = "none";
+      overlay.classList.add("pdm-dragging");
+
+      function onMouseMove(moveEvent) {
+        if (!isDragging) return;
+        const dx = moveEvent.clientX - startX;
+        const dy = moveEvent.clientY - startY;
+
+        const newLeft = startLeft + dx;
+        const newTop = startTop + dy;
+        overlay.style.left = `${newLeft}px`;
+        overlay.style.top = `${newTop}px`;
+
+        const vRect = videoEl.getBoundingClientRect();
+        customOffsetX = newLeft - (vRect.left + window.scrollX);
+        customOffsetY = newTop - (vRect.top + window.scrollY);
+      }
+
+      function onMouseUp() {
+        if (!isDragging) return;
+        isDragging = false;
+        document.body.style.userSelect = "";
+        overlay.classList.remove("pdm-dragging");
+        window.removeEventListener("mousemove", onMouseMove, true);
+        window.removeEventListener("mouseup", onMouseUp, true);
+      }
+
+      window.addEventListener("mousemove", onMouseMove, true);
+      window.addEventListener("mouseup", onMouseUp, true);
+    });
+
+    // Close / Dismiss button (Hide for this video)
+    grabClose.addEventListener("click", (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      overlay.dataset.dismissed = "true";
+      overlay.style.transition = "opacity 0.2s ease, transform 0.2s ease";
+      overlay.style.opacity = "0";
+      overlay.style.transform = "scale(0.85)";
+      setTimeout(() => {
+        overlay.style.display = "none";
+      }, 200);
+    });
 
     function updateLabelAndResolution() {
       if (activeVideo) {
@@ -558,6 +629,10 @@
 
     // Position tracking
     function reposition() {
+      if (overlay.dataset.dismissed === "true") {
+        overlay.style.display = "none";
+        return;
+      }
       if (!document.body.contains(videoEl)) {
         overlay.remove();
         overlays.delete(videoEl);
@@ -569,10 +644,15 @@
         return;
       }
 
-      const pillWidth = 145;
       overlay.style.display = "block";
-      overlay.style.top = `${Math.max(6, window.scrollY + rect.top + 8)}px`;
-      overlay.style.left = `${Math.max(6, window.scrollX + rect.right - pillWidth - 10)}px`;
+      if (customOffsetX !== null && customOffsetY !== null) {
+        overlay.style.left = `${Math.max(4, window.scrollX + rect.left + customOffsetX)}px`;
+        overlay.style.top = `${Math.max(4, window.scrollY + rect.top + customOffsetY)}px`;
+      } else {
+        const pillWidth = overlay.offsetWidth || 190;
+        overlay.style.top = `${Math.max(6, window.scrollY + rect.top + 8)}px`;
+        overlay.style.left = `${Math.max(6, window.scrollX + rect.right - pillWidth - 10)}px`;
+      }
     }
 
     window.addEventListener("scroll", reposition, { passive: true });

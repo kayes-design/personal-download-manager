@@ -69,6 +69,64 @@
   color: #f8fafc;
 }
 
+.pdm-grab-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 100%;
+  padding-left: 6px;
+  padding-right: 2px;
+  cursor: grab;
+  color: #64748b;
+  transition: color 0.15s ease;
+}
+
+.pdm-grab-handle:hover {
+  color: #94a3b8;
+}
+
+.pdm-grab-handle:active,
+.pdm-video-overlay.pdm-dragging .pdm-grab-handle {
+  cursor: grabbing;
+  color: #38bdf8;
+}
+
+.pdm-drag-icon {
+  width: 12px;
+  height: 12px;
+  fill: currentColor;
+}
+
+.pdm-grab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 100%;
+  border-left: 1px solid rgba(255, 255, 255, 0.12);
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.pdm-grab-close:hover {
+  background: rgba(239, 68, 68, 0.25);
+  color: #f87171;
+}
+
+.pdm-grab-close:active {
+  background: rgba(239, 68, 68, 0.4);
+  color: #ef4444;
+}
+
+.pdm-video-overlay.pdm-dragging {
+  opacity: 0.85;
+  transition: none !important;
+}
+
 .pdm-grab-pill.pdm-btn-success {
   border-color: #10b981 !important;
   box-shadow: 0 0 12px rgba(16, 185, 129, 0.5) !important;
