@@ -35,6 +35,38 @@ def main():
     else:
         db_path = os.path.join(get_default_data_dir(), "downloads.db")
 
+    # 0. Single-Instance Check via Windows Named Mutex
+    mutex = None
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            MUTEX_NAME = "Local\\PersonalDownloadManager_SingleInstance_Mutex"
+            ERROR_ALREADY_EXISTS = 183
+            mutex = ctypes.windll.kernel32.CreateMutexW(None, False, MUTEX_NAME)
+            if ctypes.windll.kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+                # If command-line download URL was provided, route to existing instance via DB
+                if args.url:
+                    from pdm.storage.db import DatabaseManager
+                    temp_db = DatabaseManager(db_path)
+                    default_dir = args.path or temp_db.get_setting(
+                        "default_dir", os.path.join(os.path.expanduser("~"), "Downloads")
+                    )
+                    temp_db.add_incoming_request(
+                        url=args.url,
+                        filename=args.name or "",
+                        auto_start=True
+                    )
+
+                # Restore and focus existing PDM window
+                hwnd = ctypes.windll.user32.FindWindowW(None, "Personal Download Manager")
+                if hwnd:
+                    ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                    ctypes.windll.user32.SetForegroundWindow(hwnd)
+
+                sys.exit(0)
+        except Exception:
+            pass
+
     # Qt Application Setup with High DPI support
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
@@ -106,6 +138,8 @@ def main():
         window.show()
 
     exit_code = app.exec()
+    if window.tray_icon:
+        window.tray_icon.hide()
     coordinator.shutdown()
     sys.exit(exit_code)
 

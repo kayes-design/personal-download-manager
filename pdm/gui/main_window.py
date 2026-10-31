@@ -1561,6 +1561,8 @@ class MainWindow(QMainWindow):
             dlg.activateWindow()
 
     def _on_exit(self):
+        if self.tray_icon:
+            self.tray_icon.hide()
         self.scheduler.stop()
         self.coordinator.shutdown()
         QApplication.quit()

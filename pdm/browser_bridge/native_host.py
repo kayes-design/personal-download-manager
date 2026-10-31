@@ -44,11 +44,23 @@ def send_message(message: dict, stream: Optional[BinaryIO] = None):
 
 def _ensure_pdm_running():
     """Ensure PDM GUI is running in background/tray to process queue without popping window."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            MUTEX_NAME = "Local\\PersonalDownloadManager_SingleInstance_Mutex"
+            h = ctypes.windll.kernel32.OpenMutexW(0x00100000, False, MUTEX_NAME)
+            if h:
+                ctypes.windll.kernel32.CloseHandle(h)
+                return
+        except Exception:
+            pass
+
     pdm_running = False
     for p in psutil.process_iter(["name", "cmdline"]):
         try:
-            cmdline = " ".join(p.info.get("cmdline") or [])
-            if "pdm/main.py" in cmdline or "PDM.exe" in p.info.get("name", ""):
+            name = (p.info.get("name") or "").lower()
+            cmdline = " ".join(p.info.get("cmdline") or []).lower()
+            if "pdm/main.py" in cmdline or "pdm.exe" in name:
                 pdm_running = True
                 break
         except Exception:
