@@ -342,12 +342,14 @@ class SettingsDialog(QDialog):
 
         self.show_start_dlg_cb = QCheckBox("Show start download dialog (Add URL confirmation)")
         self.show_progress_dlg_cb = QCheckBox("Show download progress dialog (compact card)")
-        self.show_complete_dlg_cb = QCheckBox("Show download complete dialog")
+        self.show_complete_dlg_cb = QCheckBox("Show download complete dialog (custom PDM card)")
+        self.show_tray_notifications_cb = QCheckBox("Show Windows system toast notification on completion")
         self.auto_close_progress_cb = QCheckBox("Automatically close download progress dialog on completion")
 
         d_layout.addWidget(self.show_start_dlg_cb)
         d_layout.addWidget(self.show_progress_dlg_cb)
         d_layout.addWidget(self.show_complete_dlg_cb)
+        d_layout.addWidget(self.show_tray_notifications_cb)
         d_layout.addWidget(self.auto_close_progress_cb)
         layout.addWidget(diag_grp)
 
@@ -475,6 +477,7 @@ class SettingsDialog(QDialog):
         self.show_start_dlg_cb.setChecked(self.db.get_setting("show_start_dlg", "1") == "1")
         self.show_progress_dlg_cb.setChecked(self.db.get_setting("show_progress_dlg", "1") == "1")
         self.show_complete_dlg_cb.setChecked(self.db.get_setting("show_complete_dlg", "1") == "1")
+        self.show_tray_notifications_cb.setChecked(self.db.get_setting("show_tray_notifications", "0") == "1")
         self.auto_close_progress_cb.setChecked(self.db.get_setting("auto_close_progress", "1") == "1")
         conflict_idx = int(self.db.get_setting("conflict_action", "0"))
         self.conflict_combo.setCurrentIndex(min(max(0, conflict_idx), 2))
@@ -522,6 +525,7 @@ class SettingsDialog(QDialog):
         self.db.set_setting("show_start_dlg", "1" if self.show_start_dlg_cb.isChecked() else "0")
         self.db.set_setting("show_progress_dlg", "1" if self.show_progress_dlg_cb.isChecked() else "0")
         self.db.set_setting("show_complete_dlg", "1" if self.show_complete_dlg_cb.isChecked() else "0")
+        self.db.set_setting("show_tray_notifications", "1" if self.show_tray_notifications_cb.isChecked() else "0")
         self.db.set_setting("auto_close_progress", "1" if self.auto_close_progress_cb.isChecked() else "0")
         self.db.set_setting("conflict_action", str(self.conflict_combo.currentIndex()))
 

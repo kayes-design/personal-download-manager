@@ -1446,7 +1446,9 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-        if self.tray_icon and self.tray_icon.isVisible():
+        show_complete_dlg = self.db.get_setting("show_complete_dlg", "1") == "1"
+        show_tray = self.db.get_setting("show_tray_notifications", "0") == "1"
+        if show_tray and not show_complete_dlg and self.tray_icon and self.tray_icon.isVisible():
             fn = item_info.get("filename", "File")
             self.tray_icon.showMessage(
                 "Download Completed",
@@ -1455,7 +1457,7 @@ class MainWindow(QMainWindow):
                 4000
             )
 
-        if self.db.get_setting("show_complete_dlg", "1") == "1":
+        if show_complete_dlg:
             rec = self.db.get_download(item_info.get("id"))
             data = rec if rec else item_info
             dlg = DownloadCompleteDialog(data, self.db, parent=None)
