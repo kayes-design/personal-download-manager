@@ -71,6 +71,22 @@ class DatabaseManager:
                 value TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS incoming_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                download_id INTEGER DEFAULT 0,
+                url TEXT NOT NULL,
+                filename TEXT DEFAULT '',
+                category TEXT DEFAULT 'Other',
+                cookies TEXT DEFAULT '',
+                referer TEXT DEFAULT '',
+                user_agent TEXT DEFAULT '',
+                origin TEXT DEFAULT '',
+                proxy TEXT DEFAULT '',
+                auto_start INTEGER DEFAULT 1,
+                processed INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
             CREATE INDEX IF NOT EXISTS idx_downloads_status ON downloads(status);
             CREATE INDEX IF NOT EXISTS idx_downloads_category ON downloads(category);
             CREATE INDEX IF NOT EXISTS idx_segments_download ON segments(download_id);
@@ -90,6 +106,11 @@ class DatabaseManager:
                     conn.execute(f"ALTER TABLE downloads ADD COLUMN {col_name} {col_type}")
                 except sqlite3.OperationalError:
                     pass
+
+            try:
+                conn.execute("ALTER TABLE incoming_requests ADD COLUMN download_id INTEGER DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass
 
     # ------------------- Download Task CRUD -------------------
 
@@ -325,4 +346,43 @@ class DatabaseManager:
             conn.execute(
                 "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (key, value)
+            )
+
+    # ------------------- Incoming Browser Requests -------------------
+
+    def add_incoming_request(
+        self,
+        url: str,
+        filename: str = "",
+        category: str = "Other",
+        cookies: str = "",
+        referer: str = "",
+        user_agent: str = "",
+        origin: str = "",
+        proxy: str = "",
+        auto_start: bool = True,
+        download_id: int = 0
+    ) -> int:
+        with self._lock, self._get_connection() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO incoming_requests (url, filename, category, cookies, referer, user_agent, origin, proxy, auto_start, download_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (url, filename, category, cookies, referer, user_agent, origin, proxy, 1 if auto_start else 0, download_id)
+            )
+            return cur.lastrowid
+
+    def fetch_unprocessed_incoming_requests(self) -> List[Dict[str, Any]]:
+        with self._lock, self._get_connection() as conn:
+            cur = conn.execute(
+                "SELECT * FROM incoming_requests WHERE processed = 0 ORDER BY id ASC"
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+    def mark_incoming_request_processed(self, request_id: int):
+        with self._lock, self._get_connection() as conn:
+            conn.execute(
+                "UPDATE incoming_requests SET processed = 1 WHERE id = ?",
+                (request_id,)
             )

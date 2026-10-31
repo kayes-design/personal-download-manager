@@ -825,6 +825,108 @@ class MainWindow(QMainWindow):
         has_completed = any(it.get("status") == "Completed" for it in items)
         self.del_completed_act.setEnabled(has_completed)
 
+        # Check for incoming download requests from browser extension
+        self._check_incoming_browser_requests()
+
+    def _check_incoming_browser_requests(self):
+        if getattr(self, "_is_showing_add_dialog", False):
+            return
+
+        try:
+            incoming = self.db.fetch_unprocessed_incoming_requests()
+            if not incoming:
+                return
+
+            self._is_showing_add_dialog = True
+            default_dir = self.db.get_setting(
+                "default_dir", os.path.join(os.path.expanduser("~"), "Downloads")
+            )
+            default_conns = int(self.db.get_setting("default_connections", "4"))
+            show_start_dlg = self.db.get_setting("show_start_dlg", "1") == "1"
+
+            for req in incoming:
+                self.db.mark_incoming_request_processed(req["id"])
+
+                dl_id = req.get("download_id", 0)
+                rec = self.db.get_download(dl_id) if dl_id else None
+
+                url = req.get("url") or (rec.get("url") if rec else "")
+                if not url:
+                    continue
+                filename = (rec.get("filename") if rec else None) or req.get("filename") or extract_filename_from_url(url)
+                cat = (rec.get("category") if rec else None) or req.get("category", "Other")
+                cookies = req.get("cookies", "") or (rec.get("cookies") if rec else "")
+                referer = req.get("referer", "") or (rec.get("referer") if rec else "")
+                user_agent = req.get("user_agent", "") or (rec.get("user_agent") if rec else "")
+                origin = req.get("origin", "") or (rec.get("origin") if rec else "")
+                proxy = req.get("proxy", "") or (rec.get("proxy") if rec else "")
+                auto_start = bool(req.get("auto_start", 1))
+
+                if show_start_dlg:
+                    # Pop up the IDM-style Download File Info Dialog in the foreground
+                    dlg = AddDownloadDialog(
+                        default_save_dir=default_dir,
+                        db=self.db,
+                        parent=None,
+                        prefill_url=url,
+                        prefill_filename=filename,
+                        prefill_category=cat,
+                        cookies=cookies,
+                        referer=referer,
+                        user_agent=user_agent,
+                        origin=origin,
+                        proxy=proxy
+                    )
+                    dlg.setWindowFlags(Qt.Window | Qt.WindowCloseButtonHint | Qt.WindowStaysOnTopHint)
+                    dlg.show()
+                    dlg.raise_()
+                    dlg.activateWindow()
+
+                    if dlg.exec():
+                        dl_url, save_dir, dl_fn, dl_cat, conns, dl_auto = dlg.get_data()
+                        if dl_id and rec:
+                            new_path = resolve_safe_filepath(save_dir, dl_fn)
+                            self.db.update_download(
+                                dl_id,
+                                destination_path=new_path,
+                                filename=dl_fn,
+                                category=dl_cat,
+                                connections_count=conns
+                            )
+                            if dl_auto:
+                                self.coordinator.resume_download(dl_id)
+                                if self.db.get_setting("show_progress_dlg", "1") == "1":
+                                    self._on_download_started_gui(dl_id)
+                        else:
+                            tid = self.coordinator.add_download(
+                                url=dl_url,
+                                destination_dir=save_dir,
+                                filename=dl_fn,
+                                category=dl_cat,
+                                connections_count=conns,
+                                auto_start=dl_auto,
+                                cookies=dlg.cookies,
+                                referer=dlg.referer,
+                                user_agent=dlg.user_agent,
+                                origin=dlg.origin,
+                                proxy=dlg.proxy
+                            )
+                            if dl_auto and self.db.get_setting("show_progress_dlg", "1") == "1":
+                                self._on_download_started_gui(tid)
+                    else:
+                        if dl_id and rec:
+                            self.coordinator.delete_download(dl_id, delete_files=False)
+                else:
+                    if dl_id and rec and auto_start:
+                        self.coordinator.resume_download(dl_id)
+                        if self.db.get_setting("show_progress_dlg", "1") == "1":
+                            self._on_download_started_gui(dl_id)
+
+        except Exception:
+            pass
+        finally:
+            self._is_showing_add_dialog = False
+
     def _get_selected_tasks(self) -> list:
         indexes = self.table_view.selectionModel().selectedRows()
         results = []
@@ -1447,15 +1549,6 @@ class MainWindow(QMainWindow):
                 pass
 
         show_complete_dlg = self.db.get_setting("show_complete_dlg", "1") == "1"
-        show_tray = self.db.get_setting("show_tray_notifications", "0") == "1"
-        if show_tray and not show_complete_dlg and self.tray_icon and self.tray_icon.isVisible():
-            fn = item_info.get("filename", "File")
-            self.tray_icon.showMessage(
-                "Download Completed",
-                f"{fn} finished downloading successfully.",
-                QSystemTrayIcon.Information,
-                4000
-            )
 
         if show_complete_dlg:
             rec = self.db.get_download(item_info.get("id"))

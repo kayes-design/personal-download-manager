@@ -111,6 +111,9 @@ def handle_download_item(db: DatabaseManager, default_dir: str, default_conns: i
     user_agent = item.get("user_agent", "")
     origin = item.get("origin", "")
     proxy = item.get("proxy", "")
+
+    show_start_dlg = db.get_setting("show_start_dlg", "1") == "1"
+
     with db._lock, db._get_connection() as conn:
         cur = conn.execute(
             """
@@ -119,7 +122,23 @@ def handle_download_item(db: DatabaseManager, default_dir: str, default_conns: i
             """,
             (valid_url, final_path, os.path.basename(final_path), cat, default_conns, initial_status, cookies, referer, user_agent, origin, proxy)
         )
-        return cur.lastrowid
+        dl_id = cur.lastrowid
+
+    if show_start_dlg:
+        db.add_incoming_request(
+            url=valid_url,
+            filename=clean_filename,
+            category=cat,
+            cookies=cookies,
+            referer=referer,
+            user_agent=user_agent,
+            origin=origin,
+            proxy=proxy,
+            auto_start=auto_start,
+            download_id=dl_id
+        )
+
+    return dl_id
 
 
 def main():

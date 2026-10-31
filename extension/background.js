@@ -150,6 +150,22 @@ chrome.webRequest.onHeadersReceived.addListener(
   (details) => {
     if (!details.tabId || details.tabId < 0) return;
 
+    const initiator = (details.initiator || details.documentUrl || "").toLowerCase();
+    const isMajorPortal = initiator.includes("facebook.com") ||
+                          initiator.includes("fb.watch") ||
+                          initiator.includes("instagram.com") ||
+                          initiator.includes("youtube.com") ||
+                          initiator.includes("tiktok.com") ||
+                          initiator.includes("twitter.com") ||
+                          initiator.includes("x.com") ||
+                          initiator.includes("reddit.com");
+
+    if (isMajorPortal) {
+      // Major video portals use DASH/HLS segmented streams that lack audio or are fragmented.
+      // Content script injects the clean master portal URL which yt-dlp & ffmpeg mux into full video with audio.
+      return;
+    }
+
     const lowerUrl = details.url.toLowerCase();
 
     const isManifest = lowerUrl.includes(".m3u8") ||
@@ -220,7 +236,6 @@ chrome.webRequest.onHeadersReceived.addListener(
                         lowerUrl.includes("videoplayback");
 
     const isMedia = isManifest || isVideoType || hasVideoExt;
-    const exactOrChunkSize = totalRangeLength > 0 ? totalRangeLength : contentLength;
 
     if (isMedia && (isManifest || exactOrChunkSize > 50000 || !exactOrChunkSize)) {
       const resInfo = getStreamResolution(details.url, contentType);

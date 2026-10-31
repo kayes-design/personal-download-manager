@@ -11,6 +11,73 @@
   transition: opacity 0.2s ease, transform 0.2s ease;
 }
 
+.pdm-grab-pill {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  background: rgba(15, 23, 42, 0.94);
+  color: #f8fafc;
+  border: 1px solid rgba(59, 130, 246, 0.65);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  cursor: pointer;
+  backdrop-filter: blur(10px);
+  overflow: hidden;
+  transition: all 0.15s cubic-bezier(0.2, 0, 0, 1);
+}
+
+.pdm-grab-pill:hover {
+  background: rgba(30, 41, 59, 0.98);
+  border-color: #38bdf8;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.55), 0 0 12px rgba(56, 189, 248, 0.35);
+}
+
+.pdm-grab-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  height: 100%;
+  font-weight: 600;
+  font-size: 12px;
+  color: #f8fafc;
+  transition: background 0.15s ease;
+}
+
+.pdm-grab-action:hover {
+  background: rgba(59, 130, 246, 0.2);
+}
+
+.pdm-grab-action:active {
+  background: rgba(59, 130, 246, 0.35);
+}
+
+.pdm-grab-dropdown {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 100%;
+  border-left: 1px solid rgba(255, 255, 255, 0.12);
+  color: #94a3b8;
+  transition: all 0.15s ease;
+}
+
+.pdm-grab-dropdown:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #f8fafc;
+}
+
+.pdm-grab-pill.pdm-btn-success {
+  border-color: #10b981 !important;
+  box-shadow: 0 0 12px rgba(16, 185, 129, 0.5) !important;
+}
+
+.pdm-grab-pill.pdm-btn-success .pdm-grab-icon {
+  fill: #10b981 !important;
+}
+
 .pdm-grab-button {
   position: relative;
   display: inline-flex;

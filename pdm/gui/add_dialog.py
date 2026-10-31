@@ -45,18 +45,46 @@ def detect_category(filename: str) -> str:
 class AddDownloadDialog(QDialog):
     """Dialog to input and configure a new download."""
 
-    def __init__(self, default_save_dir: str, db=None, parent=None):
+    def __init__(
+        self,
+        default_save_dir: str,
+        db=None,
+        parent=None,
+        prefill_url: str = "",
+        prefill_filename: str = "",
+        prefill_category: str = "",
+        cookies: str = "",
+        referer: str = "",
+        user_agent: str = "",
+        origin: str = "",
+        proxy: str = ""
+    ):
         super().__init__(parent)
-        self.setWindowTitle("Add Download URL")
+        self.setWindowTitle("Download File Info")
         self.resize(540, 310)
         self.default_save_dir = default_save_dir
         self.db = db
         self.playlist_items = []
         self.playlist_dir = ""
         self.playlist_cat = ""
+        self.cookies = cookies
+        self.referer = referer
+        self.user_agent = user_agent
+        self.origin = origin
+        self.proxy = proxy
 
         self._setup_ui()
-        self._check_clipboard()
+        if prefill_url:
+            self.url_input.setText(prefill_url)
+            if prefill_filename:
+                self.filename_input.setText(prefill_filename)
+            if prefill_category:
+                idx = self.category_combo.findText(prefill_category)
+                if idx >= 0:
+                    self.category_combo.setCurrentIndex(idx)
+                    self._on_category_changed(prefill_category)
+        else:
+            self._check_clipboard()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -103,10 +131,10 @@ class AddDownloadDialog(QDialog):
         self.connections_spin.setValue(4)
         form_layout.addRow("Max Connections:", self.connections_spin)
 
-        # Immediate Start Checkbox
+        # Immediate Start Checkbox (hidden, controlled by action buttons)
         self.start_immediately_cb = QCheckBox("Start download immediately")
         self.start_immediately_cb.setChecked(True)
-        form_layout.addRow("", self.start_immediately_cb)
+        self.start_immediately_cb.setVisible(False)
 
         layout.addLayout(form_layout)
 
@@ -123,7 +151,7 @@ class AddDownloadDialog(QDialog):
         self.error_label.setStyleSheet("color: #ef4444; font-size: 11px;")
         layout.addWidget(self.error_label)
 
-        # Action Buttons
+        # Action Buttons (IDM Authentic: Cancel | Download Later | Start Download)
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
@@ -131,12 +159,25 @@ class AddDownloadDialog(QDialog):
         cancel_btn.setObjectName("secondaryBtn")
         cancel_btn.clicked.connect(self.reject)
 
-        self.ok_btn = QPushButton("Download")
-        self.ok_btn.clicked.connect(self._on_submit)
+        self.later_btn = QPushButton("Download Later")
+        self.later_btn.setObjectName("secondaryBtn")
+        self.later_btn.clicked.connect(self._on_download_later)
+
+        self.start_btn = QPushButton("Start Download")
+        self.start_btn.clicked.connect(self._on_start_download)
 
         btn_layout.addWidget(cancel_btn)
-        btn_layout.addWidget(self.ok_btn)
+        btn_layout.addWidget(self.later_btn)
+        btn_layout.addWidget(self.start_btn)
         layout.addLayout(btn_layout)
+
+    def _on_start_download(self):
+        self.start_immediately_cb.setChecked(True)
+        self._on_submit()
+
+    def _on_download_later(self):
+        self.start_immediately_cb.setChecked(False)
+        self._on_submit()
 
     def _check_clipboard(self):
         """Auto-populate URL if clipboard contains a valid URL."""
