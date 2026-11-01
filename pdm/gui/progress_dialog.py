@@ -5,6 +5,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QDialog,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QProgressBar,
@@ -18,6 +19,77 @@ from pdm.gui.models import format_bytes, format_eta, format_speed
 from pdm.gui.segment_widget import SegmentVisualizerWidget
 
 
+PROGRESS_STYLESHEET = """
+QDialog {
+    background-color: #0f172a;
+    color: #f8fafc;
+    font-family: "Segoe UI", -apple-system, sans-serif;
+}
+#progressCard {
+    background-color: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 10px;
+}
+QLabel {
+    color: #94a3b8;
+    font-size: 12px;
+}
+QLabel#fieldVal {
+    color: #f8fafc;
+    font-size: 12px;
+    font-weight: 500;
+}
+QLabel#fieldTitle {
+    color: #94a3b8;
+    font-size: 12px;
+    font-weight: 600;
+}
+QProgressBar {
+    background-color: #0b1120;
+    border: 1px solid #334155;
+    border-radius: 6px;
+    text-align: center;
+    color: #f8fafc;
+    font-weight: bold;
+    font-size: 11px;
+    height: 18px;
+}
+QProgressBar::chunk {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2563eb, stop:1 #06b6d4);
+    border-radius: 5px;
+}
+QPushButton {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2563eb, stop:1 #1d4ed8);
+    color: #ffffff;
+    border: none;
+    border-radius: 6px;
+    font-weight: 600;
+    font-size: 12px;
+    padding: 7px 18px;
+}
+QPushButton:hover {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #3b82f6, stop:1 #2563eb);
+}
+QPushButton:pressed {
+    background-color: #1d4ed8;
+}
+QPushButton#secondaryBtn {
+    background-color: #1e293b;
+    border: 1px solid #334155;
+    color: #cbd5e1;
+    font-weight: 500;
+}
+QPushButton#secondaryBtn:hover {
+    background-color: #334155;
+    border-color: #475569;
+    color: #ffffff;
+}
+QPushButton#secondaryBtn:pressed {
+    background-color: #0f172a;
+}
+"""
+
+
 class DownloadProgressDialog(QDialog):
     """Detailed progress dialog with real-time segment visualization."""
 
@@ -28,7 +100,8 @@ class DownloadProgressDialog(QDialog):
 
         self.setWindowTitle("Download Progress")
         self.setWindowFlags(Qt.Window | Qt.WindowCloseButtonHint | Qt.WindowMinimizeButtonHint)
-        self.setFixedSize(540, 325)
+        self.setFixedSize(560, 360)
+        self.setStyleSheet(PROGRESS_STYLESHEET)
 
         from PySide6.QtWidgets import QApplication
         app = QApplication.instance()
@@ -46,35 +119,53 @@ class DownloadProgressDialog(QDialog):
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
+
+        card = QFrame()
+        card.setObjectName("progressCard")
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(14, 12, 14, 12)
 
         form = QFormLayout()
         form.setSpacing(8)
 
+        def make_row_title(txt: str) -> QLabel:
+            lbl = QLabel(txt)
+            lbl.setObjectName("fieldTitle")
+            return lbl
+
         self.filename_label = QLabel("Loading...")
-        self.filename_label.setStyleSheet("font-weight: bold; font-size: 14px;")
-        form.addRow("File:", self.filename_label)
+        self.filename_label.setObjectName("fieldVal")
+        self.filename_label.setStyleSheet("color: #38bdf8; font-weight: bold; font-size: 13px;")
+        form.addRow(make_row_title("File:"), self.filename_label)
 
         self.status_label = QLabel("Queued")
-        form.addRow("Status:", self.status_label)
+        self.status_label.setObjectName("fieldVal")
+        form.addRow(make_row_title("Status:"), self.status_label)
 
         self.size_label = QLabel("0 B / 0 B")
-        form.addRow("File Size:", self.size_label)
+        self.size_label.setObjectName("fieldVal")
+        form.addRow(make_row_title("File Size:"), self.size_label)
 
         self.quality_label = QLabel("Auto (Highest Available)")
-        self.quality_label.setStyleSheet("color: #38bdf8; font-weight: 500;")
-        form.addRow("Resolution / Quality:", self.quality_label)
+        self.quality_label.setStyleSheet("color: #06b6d4; font-weight: 600;")
+        form.addRow(make_row_title("Resolution / Quality:"), self.quality_label)
 
         self.speed_label = QLabel("0 KB/s")
-        form.addRow("Transfer Rate:", self.speed_label)
+        self.speed_label.setObjectName("fieldVal")
+        form.addRow(make_row_title("Transfer Rate:"), self.speed_label)
 
         self.eta_label = QLabel("--")
-        form.addRow("Time Left:", self.eta_label)
+        self.eta_label.setObjectName("fieldVal")
+        form.addRow(make_row_title("Time Left:"), self.eta_label)
 
         self.resume_label = QLabel("Unknown")
-        form.addRow("Resume Support:", self.resume_label)
+        self.resume_label.setObjectName("fieldVal")
+        form.addRow(make_row_title("Resume Support:"), self.resume_label)
 
-        layout.addLayout(form)
+        card_layout.addLayout(form)
+        layout.addWidget(card)
 
         # Overall progress bar
         self.progress_bar = QProgressBar()

@@ -127,18 +127,60 @@ def get_ffmpeg_path() -> Optional[str]:
     return shutil.which("ffmpeg")
 
 
+def ensure_h264_compatibility(file_path: str) -> str:
+    """Ensure downloaded MP4 uses standard H.264 video codec so standard Windows Media Player can play it without codec errors."""
+    if not file_path or not os.path.exists(file_path):
+        return file_path
+    if not file_path.lower().endswith((".mp4", ".mkv", ".webm")):
+        return file_path
+
+    ffmpeg_exe = get_ffmpeg_path()
+    if not ffmpeg_exe or not os.path.exists(ffmpeg_exe):
+        return file_path
+
+    try:
+        # Check header: if it has AV1 ('av01') or VP9 ('vp09'/'vp9'), transcode to standard H.264
+        with open(file_path, "rb") as f:
+            header_sample = f.read(8192)
+        needs_transcode = b"av01" in header_sample or b"vp09" in header_sample or b"vp9" in header_sample
+        if not needs_transcode:
+            return file_path
+
+        dest_mp4 = os.path.splitext(file_path)[0] + ".mp4"
+        temp_out = file_path + ".h264_temp.mp4"
+        cmd = [
+            ffmpeg_exe, "-y", "-i", file_path,
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+            "-c:a", "copy",
+            temp_out
+        ]
+        res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=180)
+        if res.returncode == 0 and os.path.exists(temp_out) and os.path.getsize(temp_out) > 0:
+            if file_path != dest_mp4 and os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except Exception:
+                    pass
+            os.replace(temp_out, dest_mp4)
+            return dest_mp4
+    except Exception:
+        pass
+    return file_path
+
+
 def create_temp_netscape_cookiefile(cookies_str: str, url: str) -> Optional[str]:
     """Format raw cookie string into temporary Netscape cookiefile for yt-dlp authenticated sessions."""
     if not cookies_str:
         return None
     try:
-        host = urlparse(url).hostname or "facebook.com"
-        domains = [host]
+        host = urlparse(url).hostname or "youtube.com"
+        domains = set()
         parts = host.split(".")
         if len(parts) >= 2:
-            domains.append(f".{parts[-2]}.{parts[-1]}")
+            domains.add(f".{parts[-2]}.{parts[-1]}")
         if not host.startswith("."):
-            domains.append(f".{host}")
+            domains.add(f".{host}")
+        domains.add(host)
 
         tf = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", prefix="pdm_cookies_", delete=False)
         tf.write("# Netscape HTTP Cookie File\n")
@@ -150,8 +192,9 @@ def create_temp_netscape_cookiefile(cookies_str: str, url: str) -> Optional[str]
                 k = k.strip()
                 v = v.strip()
                 if k and v:
-                    for d in set(domains):
-                        tf.write(f"{d}\tTRUE\t/\tTRUE\t2147483647\t{k}\t{v}\n")
+                    for d in domains:
+                        subdomains = "TRUE" if d.startswith(".") else "FALSE"
+                        tf.write(f"{d}\t{subdomains}\t/\tTRUE\t2147483647\t{k}\t{v}\n")
         tf.close()
         return tf.name
     except Exception:
@@ -197,9 +240,23 @@ class MediaStreamDownloader:
         dest_dir = os.path.dirname(os.path.abspath(destination_path))
         os.makedirs(dest_dir, exist_ok=True)
 
+        # Check if resolution/format was requested via URL fragment e.g. #res=720p or #res=audio or #res=sub
+        res_tag = None
+        if "#res=" in target_url:
+            parts = target_url.split("#res=")
+            target_url = parts[0]
+            res_tag = parts[1].split("&")[0].lower()
+
+        is_sub_only = res_tag in ("sub", "subs", "subtitle", "subtitles")
+
         dest_name, dest_ext = os.path.splitext(os.path.basename(destination_path))
         if not dest_ext:
-            dest_ext = ".mp4"
+            if is_sub_only:
+                dest_ext = ".srt"
+            elif res_tag == "audio":
+                dest_ext = ".m4a"
+            else:
+                dest_ext = ".mp4"
 
         # If dest_name is generic or placeholder, let yt-dlp name it with the video's real title
         generic_names = {"download", "watch", "video", "index", "media", "bin", "stream", "playlist"}
@@ -232,30 +289,70 @@ class MediaStreamDownloader:
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
         )
 
+        is_fb = "facebook.com" in target_url.lower() or "fb.watch" in target_url.lower()
+
+        format_selector = "bestvideo[vcodec^=avc]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc]+bestaudio/bestvideo+bestaudio/best"
+        merge_fmt = "mp4"
+
+        if is_sub_only:
+            format_selector = "bestaudio/best"
+            merge_fmt = None
+        elif res_tag == "audio":
+            format_selector = "bestaudio[ext=m4a]/bestaudio/best"
+            merge_fmt = "m4a"
+        elif res_tag == "360p":
+            format_selector = "bestvideo[height<=360][vcodec^=avc]+bestaudio[ext=m4a]/bestvideo[height<=360]+bestaudio/best[height<=360]"
+        elif res_tag == "480p":
+            format_selector = "bestvideo[height<=480][vcodec^=avc]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[height<=480]"
+        elif res_tag == "720p":
+            format_selector = "bestvideo[height<=720][vcodec^=avc]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]"
+        elif res_tag in ("1080p", "1080"):
+            format_selector = "bestvideo[height<=1080][vcodec^=avc]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]"
+
         ydl_opts = {
-            "format": "bv*+ba/b/best",
-            "merge_output_format": "mp4",
+            "format": format_selector,
             "outtmpl": out_template,
             "quiet": True,
             "no_warnings": True,
             "nocheckcertificate": True,
+            "noplaylist": True,
+            "extractor_args": {
+                "youtubetab": ["skip=authcheck"],
+                "youtube": ["skip=authcheck"],
+            },
             "progress_hooks": [hook],
-            "http_headers": {
+        }
+
+        if merge_fmt:
+            ydl_opts["merge_output_format"] = merge_fmt
+
+        if is_sub_only:
+            ydl_opts["writesubtitles"] = True
+            ydl_opts["writeautomaticsub"] = True
+            ydl_opts["subtitlesformat"] = "srt/vtt/best"
+            ydl_opts["skip_download"] = True
+        else:
+            ydl_opts["writesubtitles"] = True
+            ydl_opts["writeautomaticsub"] = True
+            ydl_opts["subtitleslangs"] = ["en", "bn", "all"]
+            ydl_opts["embedsubtitles"] = True
+
+        if not is_fb:
+            ydl_opts["http_headers"] = {
                 "User-Agent": ua,
                 "Accept": "*/*",
                 "Accept-Language": "en-US,en;q=0.9",
-            },
-        }
+            }
 
         cookie_file = create_temp_netscape_cookiefile(cookies, target_url) if cookies else None
         if cookie_file and os.path.exists(cookie_file):
             ydl_opts["cookiefile"] = cookie_file
 
-        if cookies:
-            ydl_opts["http_headers"]["Cookie"] = cookies
         if referer:
+            ydl_opts["http_headers"] = ydl_opts.get("http_headers", {})
             ydl_opts["http_headers"]["Referer"] = referer
         if origin:
+            ydl_opts["http_headers"] = ydl_opts.get("http_headers", {})
             ydl_opts["http_headers"]["Origin"] = origin
         if proxy:
             ydl_opts["proxy"] = proxy
@@ -264,61 +361,83 @@ class MediaStreamDownloader:
             ydl_opts["ffmpeg_location"] = self.ffmpeg_path
 
         yt_error = None
+        info = None
+        ydl_final = None
+
+        def _run_extraction(opts):
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                return ydl.extract_info(target_url, download=True), ydl
+
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(target_url, download=True)
-                if info:
-                    width = info.get("width")
-                    height = info.get("height")
-                    format_note = info.get("format_note")
-                    res_str = ""
-                    if height:
-                        res_str = f"{height}p"
-                        if width:
-                            res_str = f"{height}p ({width}x{height})"
-                    elif format_note:
-                        res_str = str(format_note)
-                    elif info.get("resolution"):
-                        res_str = str(info.get("resolution"))
-
-                    if res_str and resolution_callback:
-                        try:
-                            resolution_callback(res_str)
-                        except Exception:
-                            pass
-
-                    try:
-                        prepared = ydl.prepare_filename(info)
-                        stem, _ = os.path.splitext(prepared)
-                        mp4_candidate = f"{stem}.mp4"
-                        if os.path.exists(mp4_candidate):
-                            return mp4_candidate
-                        if os.path.exists(prepared):
-                            return prepared
-                    except Exception:
-                        pass
+            info, ydl_final = _run_extraction(ydl_opts)
         except InterruptedError:
             raise
-        except Exception as e:
-            yt_error = e
-        finally:
-            if cookie_file and os.path.exists(cookie_file):
+        except Exception as primary_err:
+            yt_error = primary_err
+            # Automatic fallback: If cookies/headers triggered error, retry completely clean anonymous
+            try:
+                fallback_opts = dict(ydl_opts)
+                fallback_opts.pop("cookiefile", None)
+                if "http_headers" in fallback_opts:
+                    fallback_opts["http_headers"] = dict(fallback_opts["http_headers"])
+                    fallback_opts["http_headers"].pop("Cookie", None)
+                    fallback_opts["http_headers"].pop("User-Agent", None)
+                info, ydl_final = _run_extraction(fallback_opts)
+                yt_error = None
+            except InterruptedError:
+                raise
+            except Exception as fb_err:
+                yt_error = fb_err
+
+        if info:
+            width = info.get("width")
+            height = info.get("height")
+            format_note = info.get("format_note")
+            res_str = ""
+            if height:
+                res_str = f"{height}p"
+                if width:
+                    res_str = f"{height}p ({width}x{height})"
+            elif format_note:
+                res_str = str(format_note)
+            elif info.get("resolution"):
+                res_str = str(info.get("resolution"))
+
+            if res_str and resolution_callback:
                 try:
-                    os.remove(cookie_file)
+                    resolution_callback(res_str)
                 except Exception:
                     pass
+
+            if ydl_final:
+                try:
+                    prepared = ydl_final.prepare_filename(info)
+                    stem, _ = os.path.splitext(prepared)
+                    mp4_candidate = f"{stem}.mp4"
+                    if os.path.exists(mp4_candidate):
+                        return ensure_h264_compatibility(mp4_candidate)
+                    if os.path.exists(prepared):
+                        return ensure_h264_compatibility(prepared)
+                except Exception:
+                    pass
+
+        if cookie_file and os.path.exists(cookie_file):
+            try:
+                os.remove(cookie_file)
+            except Exception:
+                pass
 
         # If yt-dlp succeeded and output file exists
         expected_file = os.path.join(dest_dir, f"{dest_name}.mp4")
         if os.path.exists(expected_file):
-            return expected_file
+            return ensure_h264_compatibility(expected_file)
 
         if os.path.exists(destination_path):
-            return destination_path
+            return ensure_h264_compatibility(destination_path)
 
         for f in os.listdir(dest_dir):
             if (f.startswith(dest_name) or use_real_title) and not f.endswith((".part", ".ytdl")) and f.endswith((".mp4", ".mkv", ".webm")):
-                return os.path.join(dest_dir, f)
+                return ensure_h264_compatibility(os.path.join(dest_dir, f))
 
         # Fallback to direct FFmpeg stream capture if yt-dlp failed or produced no file
         lower_url = target_url.lower()
@@ -475,6 +594,10 @@ def extract_playlist_entries(url: str, cookies: str = "", referer: str = "", max
         "no_warnings": True,
         "nocheckcertificate": True,
         "playlist_items": f"1-{max_items}",
+        "extractor_args": {
+            "youtubetab": ["skip=authcheck"],
+            "youtube": ["skip=authcheck"],
+        },
         "http_headers": {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "

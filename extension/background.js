@@ -26,7 +26,7 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId === "pdm-download-link") {
     const targetUrl = info.linkUrl || info.srcUrl;
     if (targetUrl) {
-      sendToPDM(targetUrl, "", true, tab ? tab.url : "");
+      sendToPDM(targetUrl, "", true, tab ? tab.url : "", tab ? tab.id : null);
     }
   } else if (info.menuItemId === "pdm-download-all" || info.menuItemId === "pdm-download-selection") {
     if (tab && tab.id) {
@@ -38,22 +38,45 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   }
 });
 
-// 2. Intercept browser downloads automatically with strict session and extension filters
+// 2. Comprehensive File Type Interception Engine (All 150+ Extensions + Binary MIME Detection)
 const sessionStartTime = Date.now();
 const interceptedDownloadIds = new Set();
 
 const INTERCEPTABLE_EXTENSIONS = new Set([
-  "zip", "rar", "7z", "tar", "gz", "bz2", "xz", "iso", "img", "bin",
-  "exe", "msi", "dmg", "pkg", "deb", "rpm", "apk",
-  "mp4", "mkv", "avi", "mov", "flv", "webm", "wmv", "m4v",
-  "mp3", "wav", "flac", "aac", "ogg", "m4a",
-  "pdf", "epub", "mobi", "docx", "xlsx", "pptx"
+  // Compressed & Archives
+  "zip", "rar", "7z", "tar", "gz", "gzip", "bz2", "bzip2", "xz", "z", "7zip",
+  "tgz", "tbz2", "txz", "cab", "arj", "lzh", "ace", "iso", "img", "bin", "cue",
+  "nrg", "vhd", "vhdx", "vmdk", "dmg", "pkg", "wim", "part1", "r00", "z01",
+
+  // Executables & Installers
+  "exe", "msi", "msix", "bat", "cmd", "ps1", "deb", "rpm", "apk", "xapk", "aab",
+  "appx", "appxbundle", "run", "appimage", "jar", "war", "crx", "xpi",
+
+  // Video & Streams
+  "mp4", "mkv", "avi", "mov", "flv", "webm", "wmv", "m4v", "ts", "mts", "m2ts",
+  "3gp", "3g2", "ogv", "vob", "divx", "xvid", "rm", "rmvb", "asf", "m3u8", "mpd",
+
+  // Audio & Music
+  "mp3", "wav", "flac", "aac", "ogg", "m4a", "opus", "wma", "alac", "aiff", "aif",
+  "mid", "midi", "mka", "ape", "ra",
+
+  // Documents, Spreadsheets & eBooks
+  "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "csv", "tsv", "txt", "rtf",
+  "epub", "mobi", "azw", "azw3", "djvu", "odt", "ods", "odp", "pages", "numbers", "key",
+
+  // High-Res Images & Creative Design
+  "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "tiff", "tif", "ico",
+  "psd", "ai", "eps", "raw", "cr2", "nef", "heic", "avif",
+
+  // Database & Developer Artifacts
+  "sql", "sqlite", "sqlite3", "db", "mdb", "accdb", "json", "xml", "yaml", "yml",
+  "whl", "torrent"
 ]);
 
 function getUrlExt(str) {
   if (!str) return null;
   try {
-    const clean = str.split("?")[0].split("#")[0];
+    const clean = str.split("?")[0].split("#")[0].trim();
     const dot = clean.lastIndexOf(".");
     if (dot === -1) return null;
     return clean.substring(dot + 1).toLowerCase();
@@ -71,7 +94,8 @@ function shouldIntercept(item) {
     lowerUrl.includes("/backend-api/") ||
     lowerUrl.includes("/api/") ||
     lowerUrl.includes("localhost") ||
-    lowerUrl.includes("blob:")
+    lowerUrl.includes("blob:") ||
+    lowerUrl.includes("data:")
   ) {
     return false;
   }
@@ -87,8 +111,44 @@ function shouldIntercept(item) {
     }
   }
 
+  const mime = (item.mime || "").toLowerCase();
+
+  // Never intercept HTML pages or web scripts
+  if (
+    mime === "text/html" ||
+    mime === "text/css" ||
+    mime === "text/javascript" ||
+    mime === "application/javascript" ||
+    mime === "application/x-javascript"
+  ) {
+    return false;
+  }
+
   const ext = getUrlExt(item.filename) || getUrlExt(url);
-  return ext && INTERCEPTABLE_EXTENSIONS.has(ext);
+  if (ext && INTERCEPTABLE_EXTENSIONS.has(ext)) {
+    return true;
+  }
+
+  // Intercept any binary attachment or octet stream
+  if (
+    mime.startsWith("application/octet-stream") ||
+    mime.startsWith("application/x-zip") ||
+    mime.startsWith("application/x-rar") ||
+    mime.startsWith("application/x-7z") ||
+    mime.startsWith("application/x-msdownload") ||
+    mime.startsWith("application/pdf") ||
+    mime.startsWith("application/vnd.android") ||
+    mime.startsWith("application/zip")
+  ) {
+    return true;
+  }
+
+  // If file size is substantial (> 2MB) and Chrome decided it is a file download
+  if (item.fileSize && item.fileSize > 2097152) {
+    return true;
+  }
+
+  return false;
 }
 
 chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
@@ -97,9 +157,15 @@ chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
       interceptedDownloadIds.add(item.id);
       const url = item.finalUrl || item.url;
       const referer = item.referrer || "";
-      chrome.downloads.cancel(item.id, () => {
-        chrome.downloads.erase({ id: item.id });
-        sendToPDM(url, item.filename || "", true, referer);
+      const filename = item.filename || "";
+
+      // Find the active tab that initiated this download
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        const activeTabId = tabs && tabs.length > 0 ? tabs[0].id : null;
+        chrome.downloads.cancel(item.id, () => {
+          chrome.downloads.erase({ id: item.id });
+          sendToPDM(url, filename, true, referer, activeTabId);
+        });
       });
       return false;
     }
@@ -119,52 +185,39 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
 
     if (details.requestHeaders) {
       for (const h of details.requestHeaders) {
-        const name = h.name.toLowerCase();
-        if (name === "user-agent") ua = h.value;
-        else if (name === "referer") ref = h.value;
-        else if (name === "origin") origin = h.value;
-        else if (name === "cookie") cookie = h.value;
+        const n = h.name.toLowerCase();
+        if (n === "user-agent") ua = h.value;
+        else if (n === "referer") ref = h.value;
+        else if (n === "origin") origin = h.value;
+        else if (n === "cookie") cookie = h.value;
       }
     }
 
     requestMetadataCache.set(details.url, {
-      userAgent: ua || navigator.userAgent,
-      referer: ref || details.initiator || "",
-      origin: origin || "",
-      cookie: cookie || "",
-      tabId: details.tabId,
+      userAgent: ua,
+      referer: ref,
+      origin: origin,
+      cookie: cookie,
       time: Date.now()
     });
 
-    if (requestMetadataCache.size > 500) {
-      const oldest = requestMetadataCache.keys().next().value;
-      requestMetadataCache.delete(oldest);
+    if (requestMetadataCache.size > 800) {
+      const now = Date.now();
+      for (const [k, v] of requestMetadataCache.entries()) {
+        if (now - v.time > 1800000) {
+          requestMetadataCache.delete(k);
+        }
+      }
     }
   },
   { urls: ["http://*/*", "https://*/*"] },
-  ["requestHeaders"]
+  ["requestHeaders", "extraHeaders"]
 );
 
-// 4. Media Stream Sniffer (Captures video streams for the Floating Grabber Panel)
+// 4. Enhanced Media & Stream Sniffer (HLS, DASH, Direct Video/Audio)
 chrome.webRequest.onHeadersReceived.addListener(
   (details) => {
     if (!details.tabId || details.tabId < 0) return;
-
-    const initiator = (details.initiator || details.documentUrl || "").toLowerCase();
-    const isMajorPortal = initiator.includes("facebook.com") ||
-                          initiator.includes("fb.watch") ||
-                          initiator.includes("instagram.com") ||
-                          initiator.includes("youtube.com") ||
-                          initiator.includes("tiktok.com") ||
-                          initiator.includes("twitter.com") ||
-                          initiator.includes("x.com") ||
-                          initiator.includes("reddit.com");
-
-    if (isMajorPortal) {
-      // Major video portals use DASH/HLS segmented streams that lack audio or are fragmented.
-      // Content script injects the clean master portal URL which yt-dlp & ffmpeg mux into full video with audio.
-      return;
-    }
 
     const lowerUrl = details.url.toLowerCase();
 
@@ -174,7 +227,7 @@ chrome.webRequest.onHeadersReceived.addListener(
                        lowerUrl.includes("hlsplaylist") ||
                        lowerUrl.includes("/manifest");
 
-    // Filter out repetitive small transport segments (.m4s, ts chunks, byte-range slices, YouTube/Facebook chunks) unless it's a manifest
+    // Filter out tiny transport segments unless manifest
     const isNumberedSegment = /\.m4s(\?|$)/i.test(lowerUrl) ||
                               /\b(seg|segment|chunk|frag|piece)[-_]?\d+\.ts(\?|$)/i.test(lowerUrl) ||
                               /\/\d+\.ts(\?|$)/i.test(lowerUrl) ||
@@ -214,7 +267,6 @@ chrome.webRequest.onHeadersReceived.addListener(
       }
     }
 
-    // Ignore tiny audio pings, preview loops, tracking blobs (< 250 KB) unless it's an HLS/DASH manifest
     const exactOrChunkSize = totalRangeLength > 0 ? totalRangeLength : contentLength;
     if (!isManifest && exactOrChunkSize > 0 && exactOrChunkSize < 250000) {
       return;
@@ -233,7 +285,10 @@ chrome.webRequest.onHeadersReceived.addListener(
                         lowerUrl.includes(".flv") ||
                         lowerUrl.includes(".avi") ||
                         lowerUrl.includes(".m4v") ||
-                        lowerUrl.includes("videoplayback");
+                        lowerUrl.includes("videoplayback") ||
+                        lowerUrl.includes("fbcdn.net") ||
+                        lowerUrl.includes("googlevideo.com") ||
+                        lowerUrl.includes("cdninstagram.com");
 
     const isMedia = isManifest || isVideoType || hasVideoExt;
 
@@ -262,7 +317,6 @@ chrome.webRequest.onHeadersReceived.addListener(
         }
       };
 
-      // Deliver to iframe if playing inside embed, and also deliver to top frame
       if (details.frameId > 0) {
         chrome.tabs.sendMessage(details.tabId, mediaPayload, { frameId: details.frameId }).catch(() => {});
       }
@@ -273,7 +327,7 @@ chrome.webRequest.onHeadersReceived.addListener(
   ["responseHeaders"]
 );
 
-// 5. Notify tabs when user navigates (SPA navigation support e.g. YouTube, Facebook, Twitter)
+// 5. Notify tabs when user navigates
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.url || (changeInfo.status === "loading" && tab.url)) {
     chrome.tabs.sendMessage(tabId, {
@@ -335,7 +389,7 @@ async function getCookiesForUrl(targetUrl) {
   }
 }
 
-// 6. Message router from Content Script (Floating Button clicks)
+// 6. Native Messaging Communication & Card Hub Dispatcher
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "download_via_native") {
     (async () => {
@@ -359,15 +413,100 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         (response) => {
           if (chrome.runtime.lastError) {
             console.warn("PDM Host Communication Error:", chrome.runtime.lastError.message);
-            sendResponse({ status: "error", error: chrome.runtime.lastError.message });
+            // VnA-style clipboard fallback if native messaging fails
+            try {
+              if (sender.tab && sender.tab.id) {
+                chrome.scripting.executeScript({
+                  target: { tabId: sender.tab.id },
+                  func: (u) => { navigator.clipboard.writeText(u); },
+                  args: [message.url]
+                }).catch(() => {});
+              }
+            } catch (err) {}
+            sendResponse({ status: "error", error: chrome.runtime.lastError.message, copiedToClipboard: true });
           } else {
-            console.log("PDM Task Created Successfully:", response);
             sendResponse({ status: "ok", data: response });
           }
         }
       );
     })();
     return true; // Keep channel open for async response
+  } else if (message.action === "get_task_progress") {
+    chrome.runtime.sendNativeMessage(
+      "com.pdm.native_host",
+      {
+        action: "get_progress",
+        task_id: message.task_id
+      },
+      (response) => {
+        if (chrome.runtime.lastError) {
+          sendResponse({ status: "error", error: chrome.runtime.lastError.message });
+        } else {
+          sendResponse({ status: "ok", data: response });
+        }
+      }
+    );
+    return true;
+  } else if (message.action === "pause_task") {
+    chrome.runtime.sendNativeMessage(
+      "com.pdm.native_host",
+      {
+        action: "pause_task",
+        task_id: message.task_id
+      },
+      (response) => {
+        sendResponse(response || { status: "ok" });
+      }
+    );
+    return true;
+  } else if (message.action === "resume_task") {
+    chrome.runtime.sendNativeMessage(
+      "com.pdm.native_host",
+      {
+        action: "resume_task",
+        task_id: message.task_id
+      },
+      (response) => {
+        sendResponse(response || { status: "ok" });
+      }
+    );
+    return true;
+  } else if (message.action === "cancel_task") {
+    chrome.runtime.sendNativeMessage(
+      "com.pdm.native_host",
+      {
+        action: "cancel_task",
+        task_id: message.task_id
+      },
+      (response) => {
+        sendResponse(response || { status: "ok" });
+      }
+    );
+    return true;
+  } else if (message.action === "open_file") {
+    chrome.runtime.sendNativeMessage(
+      "com.pdm.native_host",
+      {
+        action: "open_file",
+        task_id: message.task_id
+      },
+      (response) => {
+        sendResponse(response || { status: "ok" });
+      }
+    );
+    return true;
+  } else if (message.action === "open_folder") {
+    chrome.runtime.sendNativeMessage(
+      "com.pdm.native_host",
+      {
+        action: "open_folder",
+        task_id: message.task_id
+      },
+      (response) => {
+        sendResponse(response || { status: "ok" });
+      }
+    );
+    return true;
   } else if (message.action === "batch_download_native") {
     (async () => {
       const items = message.items || [];
@@ -404,13 +543,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             console.warn("PDM Host Communication Error:", chrome.runtime.lastError.message);
             sendResponse({ status: "error", error: chrome.runtime.lastError.message });
           } else {
-            console.log("PDM Batch Created Successfully:", response);
             sendResponse({ status: "ok", data: response });
           }
         }
       );
     })();
-    return true; // Keep channel open for async response
+    return true;
   }
 });
 
@@ -446,7 +584,7 @@ async function getActiveBrowserProxy() {
 }
 
 // 8. Send message via Native Messaging host to PDM desktop application
-async function sendToPDM(url, filename, autoStart = true, referer = "") {
+async function sendToPDM(url, filename, autoStart = true, referer = "", activeTabId = null) {
   const cookies = await getCookiesForUrl(url);
   const proxy = await getActiveBrowserProxy();
   let origin = "";
@@ -474,6 +612,15 @@ async function sendToPDM(url, filename, autoStart = true, referer = "") {
         console.warn("PDM Host Communication Error:", chrome.runtime.lastError.message);
       } else {
         console.log("PDM Task Created Successfully:", response);
+        // If an active tab is available, trigger the in-page active download HUD!
+        if (activeTabId && response && response.task_ids && response.task_ids.length > 0) {
+          chrome.tabs.sendMessage(activeTabId, {
+            type: "PDM_ACTIVE_DOWNLOAD_STARTED",
+            taskId: response.task_ids[0],
+            title: filename || url,
+            url: url
+          }).catch(() => {});
+        }
       }
     }
   );

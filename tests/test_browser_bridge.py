@@ -31,6 +31,7 @@ def test_native_batch_handling(tmp_path):
     from pdm.storage.db import DatabaseManager
 
     db = DatabaseManager(str(tmp_path / "test_bridge.db"))
+    db.set_setting("show_start_dlg", "0")
 
     # Instant start
     item1 = {"url": "https://example.com/v1.mp4", "filename": "v1.mp4", "auto_start": True}

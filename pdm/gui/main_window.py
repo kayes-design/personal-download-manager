@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 from pdm.core.coordinator import DownloadCoordinator
+from pdm.core.media_downloader import is_media_stream_url
 from pdm.core.engine import DownloadStatus, DownloadTask
 from pdm.core.scheduler import QueueScheduler
 from pdm.core.security import extract_filename_from_url, validate_url
@@ -212,24 +213,28 @@ class IDMHeaderView(QHeaderView):
 
 
 class ShutdownCountdownDialog(QDialog):
-    """60-second cancelable warning dialog before automated PC shutdown."""
+    """60-second cancelable warning dialog before automated PC shutdown, sleep, or exit."""
 
-    def __init__(self, scheduler: QueueScheduler, parent=None):
+    def __init__(self, scheduler: Optional[QueueScheduler] = None, parent=None, action: str = "shutdown"):
         super().__init__(parent)
         self.scheduler = scheduler
-        self.setWindowTitle("Auto-Shutdown Warning")
+        self.action = action  # "shutdown", "sleep", or "exit"
+
+        action_title = "Shutdown" if self.action == "shutdown" else ("Sleep" if self.action == "sleep" else "Exit")
+        self.setWindowTitle(f"Auto-{action_title} Warning")
         self.resize(380, 160)
         self.countdown = 60
 
+        action_verb = "shut down" if self.action == "shutdown" else ("sleep" if self.action == "sleep" else "close")
         layout = QVBoxLayout(self)
-        self.label = QLabel(f"All queue downloads completed.\nComputer will shut down in {self.countdown} seconds.")
+        self.label = QLabel(f"All downloads completed.\nComputer will {action_verb} in {self.countdown} seconds.")
         self.label.setStyleSheet("font-size: 13px; font-weight: bold;")
         self.label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.label)
 
         btn_layout = QHBoxLayout()
-        cancel_btn = QPushButton("Cancel Shutdown")
-        cancel_btn.clicked.connect(self._cancel_shutdown)
+        cancel_btn = QPushButton(f"Cancel {action_title}")
+        cancel_btn.clicked.connect(self._cancel_action)
         btn_layout.addWidget(cancel_btn)
         layout.addLayout(btn_layout)
 
@@ -239,17 +244,40 @@ class ShutdownCountdownDialog(QDialog):
 
     def _tick(self):
         self.countdown -= 1
+        action_verb = "shut down" if self.action == "shutdown" else ("sleep" if self.action == "sleep" else "close")
         if self.countdown <= 0:
             self._timer.stop()
-            self.label.setText("Shutting down now...")
-            self.scheduler.trigger_system_shutdown()
+            self.label.setText("Executing now...")
+            self._execute_action()
             self.accept()
         else:
-            self.label.setText(f"All queue downloads completed.\nComputer will shut down in {self.countdown} seconds.")
+            self.label.setText(f"All downloads completed.\nComputer will {action_verb} in {self.countdown} seconds.")
 
-    def _cancel_shutdown(self):
+    def _execute_action(self):
+        if self.action == "sleep":
+            try:
+                subprocess.run(["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"], check=False)
+            except Exception:
+                pass
+        elif self.action == "shutdown":
+            if self.scheduler:
+                self.scheduler.trigger_system_shutdown()
+            else:
+                try:
+                    subprocess.run(["shutdown.exe", "/s", "/t", "0"], check=False)
+                except Exception:
+                    pass
+        elif self.action == "exit":
+            parent = self.parent()
+            if parent and hasattr(parent, "_on_exit"):
+                parent._on_exit()
+            else:
+                QApplication.quit()
+
+    def _cancel_action(self):
         self._timer.stop()
-        self.scheduler.cancel_system_shutdown()
+        if self.scheduler:
+            self.scheduler.cancel_system_shutdown()
         self.reject()
 
 
@@ -466,8 +494,25 @@ class MainWindow(QMainWindow):
         # 3. Status Bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
+
+        cur_comp = self.db.get_setting("on_completion_action", "none")
+        comp_label = "Do Nothing"
+        if cur_comp == "sleep":
+            comp_label = "Sleep"
+        elif cur_comp == "shutdown":
+            comp_label = "Shutdown"
+        elif cur_comp == "exit":
+            comp_label = "Exit PDM"
+
+        self.completion_btn = QPushButton(f"⚡ On finish: {comp_label}")
+        self.completion_btn.setFlat(True)
+        self.completion_btn.setCursor(Qt.PointingHandCursor)
+        self.completion_btn.setStyleSheet("color: #38bdf8; font-size: 11px; padding: 2px 8px; border: 1px solid #334155; border-radius: 4px; background: #1e293b;")
+        self.completion_btn.clicked.connect(self._show_completion_popup_menu)
+
         self.speed_status_label = QLabel("Speed: 0 KB/s")
         self.active_status_label = QLabel("Active: 0")
+        self.status_bar.addPermanentWidget(self.completion_btn)
         self.status_bar.addPermanentWidget(self.active_status_label)
         self.status_bar.addPermanentWidget(self.speed_status_label)
 
@@ -557,6 +602,24 @@ class MainWindow(QMainWindow):
         sched_act = dl_menu.addAction("&Scheduler...")
         sched_act.triggered.connect(self._open_scheduler)
 
+        finish_menu = dl_menu.addMenu("On &Completion")
+        self.finish_group = QActionGroup(self)
+        self.finish_group.setExclusive(True)
+        cur_comp = self.db.get_setting("on_completion_action", "none")
+
+        for text_opt, val in [
+            ("Do Nothing", "none"),
+            ("Sleep Computer", "sleep"),
+            ("Shut Down Computer", "shutdown"),
+            ("Exit Personal Download Manager", "exit")
+        ]:
+            act = finish_menu.addAction(text_opt)
+            act.setCheckable(True)
+            act.setChecked(cur_comp == val)
+            label = text_opt.replace("Computer", "").replace("Personal Download Manager", "PDM").strip()
+            act.triggered.connect(lambda checked, v=val, l=label: self._set_completion_action(v, l))
+            self.finish_group.addAction(act)
+
         dl_menu.addSeparator()
 
         start_q_act = dl_menu.addAction("&Start Queue")
@@ -613,6 +676,22 @@ class MainWindow(QMainWindow):
                     return ico
         return None
 
+    def _show_window(self):
+        """Restore and bring main window to the foreground."""
+        self.show()
+        self.setWindowState(Qt.WindowActive)
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                hwnd = int(self.winId())
+                ctypes.windll.user32.ShowWindow(hwnd, 9) # SW_RESTORE
+                ctypes.windll.user32.SetForegroundWindow(hwnd)
+            except Exception:
+                pass
+
     def _setup_tray(self):
         self.tray_icon = QSystemTrayIcon(self)
         if self.app_icon and not self.app_icon.isNull():
@@ -622,7 +701,7 @@ class MainWindow(QMainWindow):
 
         tray_menu = QMenu()
         show_act = tray_menu.addAction("Show PDM")
-        show_act.triggered.connect(self.showNormal)
+        show_act.triggered.connect(self._show_window)
 
         add_act = tray_menu.addAction("Add URL...")
         add_act.triggered.connect(self._open_add_dialog)
@@ -642,6 +721,12 @@ class MainWindow(QMainWindow):
         quit_act.triggered.connect(self._on_exit)
 
         self.tray_icon.setContextMenu(tray_menu)
+
+        def on_tray_activated(reason):
+            if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):
+                self._show_window()
+
+        self.tray_icon.activated.connect(on_tray_activated)
         self.tray_icon.show()
 
     def _setup_clipboard_monitor(self):
@@ -662,15 +747,21 @@ class MainWindow(QMainWindow):
         if not ok:
             return
 
-        # Check if URL ends with a known downloadable extension
+        # Check if URL ends with a known downloadable extension OR is a media stream/portal OR cloud drive
         fn = extract_filename_from_url(valid_url).lower()
         _, ext = os.path.splitext(fn)
-        if ext in DOWNLOADABLE_EXTENSIONS:
+        is_known_ext = ext in DOWNLOADABLE_EXTENSIONS
+        is_media = is_media_stream_url(valid_url)
+        is_cloud = any(k in valid_url.lower() for k in (
+            "drive.google.com", "mediafire.com", "dropbox.com", "mega.nz", 
+            "archive.org", "github.com", "/download", "download=", "dl=", "?dl=1"
+        ))
+
+        if is_known_ext or is_media or is_cloud:
             self._last_clipboard_url = text
-            # Activate window and open Add Dialog
             self.showNormal()
             self.activateWindow()
-            self._open_add_dialog()
+            self._open_add_dialog(prefill_url=valid_url)
 
     def _apply_theme(self):
         theme = self.db.get_setting("theme", "Dark")
@@ -879,8 +970,18 @@ class MainWindow(QMainWindow):
                     )
                     dlg.setWindowFlags(Qt.Window | Qt.WindowCloseButtonHint | Qt.WindowStaysOnTopHint)
                     dlg.show()
+                    dlg.showNormal()
                     dlg.raise_()
                     dlg.activateWindow()
+                    if sys.platform == "win32":
+                        try:
+                            import ctypes
+                            hwnd = int(dlg.winId())
+                            ctypes.windll.user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002) # HWND_TOPMOST
+                            ctypes.windll.user32.ShowWindow(hwnd, 9) # SW_RESTORE
+                            ctypes.windll.user32.SetForegroundWindow(hwnd)
+                        except Exception:
+                            pass
 
                     if dlg.exec():
                         dl_url, save_dir, dl_fn, dl_cat, conns, dl_auto = dlg.get_data()
@@ -940,11 +1041,11 @@ class MainWindow(QMainWindow):
         tasks = self._get_selected_tasks()
         return tasks[0] if tasks else None
 
-    def _open_add_dialog(self):
+    def _open_add_dialog(self, prefill_url: str = ""):
         default_dir = self.db.get_setting(
             "default_dir", os.path.join(os.path.expanduser("~"), "Downloads")
         )
-        dialog = AddDownloadDialog(default_dir, self.db, self)
+        dialog = AddDownloadDialog(default_dir, self.db, self, prefill_url=prefill_url)
         if dialog.exec():
             if getattr(dialog, "playlist_items", None):
                 target_dir = dialog.playlist_dir or default_dir
@@ -1190,9 +1291,14 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
 
         # 8. Refresh download address
-        refresh_act = menu.addAction("Refresh download address")
+        refresh_act = menu.addAction("Refresh download address...")
         refresh_act.setEnabled(status in ("Paused", "Error", "Downloading"))
         refresh_act.triggered.connect(lambda: self._refresh_download_address(item))
+
+        # Checksum / Verify Hash
+        hash_act = menu.addAction("Calculate / Verify Checksum (Hash)...")
+        hash_act.setEnabled(dest_exists)
+        hash_act.triggered.connect(self._verify_selected_hash)
 
         menu.addSeparator()
 
@@ -1559,6 +1665,48 @@ class MainWindow(QMainWindow):
             dlg.show()
             dlg.raise_()
             dlg.activateWindow()
+
+        if hasattr(self, "tray_icon") and self.tray_icon.isVisible():
+            fn = item_info.get("filename") or "File"
+            self.tray_icon.showMessage(
+                "Personal Download Manager",
+                f"Download completed: {fn}",
+                QSystemTrayIcon.MessageIcon.Information,
+                3500
+            )
+
+        # Check if all downloads completed and on-completion action is active
+        comp_action = self.db.get_setting("on_completion_action", "none")
+        if comp_action in ("sleep", "shutdown", "exit"):
+            active = len(self.coordinator.list_active_tasks())
+            queued = len(self.db.list_downloads(status=DownloadStatus.QUEUED.value))
+            if active == 0 and queued == 0:
+                dlg = ShutdownCountdownDialog(scheduler=self.scheduler, parent=self, action=comp_action)
+                dlg.exec()
+
+    def _set_completion_action(self, val: str, label: str):
+        self.db.set_setting("on_completion_action", val)
+        if hasattr(self, "completion_btn"):
+            self.completion_btn.setText(f"⚡ On finish: {label}")
+
+    def _show_completion_popup_menu(self):
+        menu = QMenu(self)
+        cur_comp = self.db.get_setting("on_completion_action", "none")
+
+        for text_opt, val in [
+            ("Do Nothing", "none"),
+            ("Sleep Computer", "sleep"),
+            ("Shut Down Computer", "shutdown"),
+            ("Exit Personal Download Manager", "exit")
+        ]:
+            act = menu.addAction(text_opt)
+            act.setCheckable(True)
+            act.setChecked(cur_comp == val)
+            label = text_opt.replace("Computer", "").replace("Personal Download Manager", "PDM").strip()
+            act.triggered.connect(lambda checked, v=val, l=label: self._set_completion_action(v, l))
+
+        pos = self.completion_btn.mapToGlobal(QPoint(0, -menu.sizeHint().height()))
+        menu.exec(pos)
 
     def _on_exit(self):
         if self.tray_icon:

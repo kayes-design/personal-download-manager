@@ -4,6 +4,7 @@ import os
 import shutil
 import threading
 import time
+import urllib.parse
 from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Dict, List, Optional
@@ -135,6 +136,18 @@ class DownloadTask:
         self._stop_event.clear()
         self._set_status(DownloadStatus.DOWNLOADING)
 
+        # Guard against accidental homepage root downloads
+        parsed = urllib.parse.urlparse(self.url)
+        if parsed.netloc and (not parsed.path or parsed.path == "/") and not parsed.query:
+            if any(dom in parsed.netloc.lower() for dom in ("facebook.com", "fb.watch", "youtube.com", "instagram.com", "tiktok.com", "twitter.com", "x.com")):
+                err_msg = (
+                    f"The link '{self.url}' is a website homepage, not a video stream. "
+                    "Please navigate to the specific video/reel page, or click Download on the video player."
+                )
+                self.error_message = err_msg
+                self._set_status(DownloadStatus.ERROR)
+                raise ValueError(err_msg)
+
         # 0. Check if URL is a media stream (Reddit, YouTube, M3U8, DASH, etc.)
         if is_media_stream_url(self.url):
             try:
@@ -146,8 +159,7 @@ class DownloadTask:
                     return
                 # If stream is an M3U8/MPD or explicit video manifest, DO NOT fallback to raw HTTP
                 # because downloading a 2KB text playlist into a fake .mp4 file creates broken files
-                lower_url = self.url.lower()
-                if any(ind in lower_url for ind in (".m3u8", ".mpd", "dashplaylist", "hlsplaylist", "/manifest")):
+                if is_media_stream_url(self.url):
                     self.error_message = f"Failed to capture media stream: {stream_err}"
                     self._set_status(DownloadStatus.ERROR)
                     raise
@@ -169,11 +181,15 @@ class DownloadTask:
                 try:
                     self._download_stream()
                     return
-                except Exception:
-                    # If not a media-extractable page, continue normal segmented download
+                except Exception as stream_err:
                     if self.is_stopped():
                         self._set_status(DownloadStatus.PAUSED)
                         return
+
+                    if is_media_stream_url(self.url):
+                        self.error_message = f"Failed to capture media stream: {stream_err}"
+                        self._set_status(DownloadStatus.ERROR)
+                        raise
 
                     # Guard against saving an HTML error/login page as a media file ("download hoy but kisu nai")
                     ext = os.path.splitext(self.filename)[1].lower()

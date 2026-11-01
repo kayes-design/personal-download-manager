@@ -5,7 +5,8 @@ import os
 import struct
 import subprocess
 import sys
-from typing import BinaryIO, List, Optional
+import time
+from typing import BinaryIO, Dict, List, Optional, Tuple
 
 import psutil
 
@@ -18,6 +19,9 @@ from pdm.core.security import (
 )
 from pdm.main import get_default_data_dir
 from pdm.storage.db import DatabaseManager
+
+# In-memory tracker for speed and ETA: task_id -> (timestamp, downloaded_bytes)
+_speed_tracker: Dict[int, Tuple[float, int]] = {}
 
 
 def read_message(stream: Optional[BinaryIO] = None) -> Optional[dict]:
@@ -42,6 +46,22 @@ def send_message(message: dict, stream: Optional[BinaryIO] = None):
     stream.flush()
 
 
+def _notify_pdm_pump():
+    """Notify running PDM GUI instance to refresh table and pump queue."""
+    try:
+        from PySide6.QtNetwork import QLocalSocket
+        from PySide6.QtCore import QCoreApplication
+        app = QCoreApplication.instance() or QCoreApplication([])
+        sock = QLocalSocket()
+        sock.connectToServer("PersonalDownloadManager_SingleInstance_IPC")
+        if sock.waitForConnected(200):
+            sock.write(b"PUMP|||")
+            sock.waitForBytesWritten(300)
+            sock.disconnectFromServer()
+    except Exception:
+        pass
+
+
 def _ensure_pdm_running():
     """Ensure PDM GUI is running in background/tray to process queue without popping window."""
     if sys.platform == "win32":
@@ -51,6 +71,7 @@ def _ensure_pdm_running():
             h = ctypes.windll.kernel32.OpenMutexW(0x00100000, False, MUTEX_NAME)
             if h:
                 ctypes.windll.kernel32.CloseHandle(h)
+                _notify_pdm_pump()
                 return
         except Exception:
             pass
@@ -66,14 +87,61 @@ def _ensure_pdm_running():
         except Exception:
             pass
 
-    if not pdm_running:
-        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        exe_path = os.path.join(base_dir, "dist", "PDM", "PDM.exe")
-        if os.path.exists(exe_path):
-            subprocess.Popen([exe_path, "--tray"], cwd=os.path.dirname(exe_path))
+    if pdm_running:
+        _notify_pdm_pump()
+        return
+
+    # Locate real PDM executable
+    exe_path = None
+    if getattr(sys, "frozen", False):
+        exe_path = sys.executable
+    else:
+        appdata = os.environ.get("LOCALAPPDATA", "")
+        installed_exe = os.path.join(appdata, "Programs", "PersonalDownloadManager", "app", "PDM.exe")
+        if os.path.exists(installed_exe):
+            exe_path = installed_exe
         else:
-            main_py = os.path.join(base_dir, "pdm", "main.py")
+            base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            dev_exe = os.path.join(base_dir, "dist", "PDM", "PDM.exe")
+            if os.path.exists(dev_exe):
+                exe_path = dev_exe
+
+    if exe_path and os.path.exists(exe_path):
+        subprocess.Popen([exe_path, "--tray"], cwd=os.path.dirname(exe_path))
+    else:
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        main_py = os.path.join(base_dir, "pdm", "main.py")
+        if os.path.exists(main_py):
             subprocess.Popen([sys.executable, main_py, "--tray"], cwd=base_dir)
+
+    time.sleep(0.3)
+    _notify_pdm_pump()
+
+
+def format_bytes_speed(bps: float) -> str:
+    """Format speed in bps to human-readable string."""
+    if bps <= 0:
+        return "0 KB/s"
+    if bps >= 1048576:
+        return f"{bps / 1048576:.1f} MB/s"
+    if bps >= 1024:
+        return f"{bps / 1024:.0f} KB/s"
+    return f"{bps:.0f} B/s"
+
+
+def format_eta(seconds: int) -> str:
+    """Format ETA seconds to readable string."""
+    if seconds <= 0:
+        return "0s"
+    if seconds >= 3600:
+        h = seconds // 3600
+        m = (seconds % 3600) // 60
+        return f"{h}h {m}m"
+    if seconds >= 60:
+        m = seconds // 60
+        s = seconds % 60
+        return f"{m}m {s}s"
+    return f"{seconds}s"
 
 
 def handle_download_item(db: DatabaseManager, default_dir: str, default_conns: int, item: dict) -> Optional[int]:
@@ -86,21 +154,22 @@ def handle_download_item(db: DatabaseManager, default_dir: str, default_conns: i
     clean_filename = sanitize_filename(raw_filename)
 
     auto_start = item.get("auto_start", True)
-    initial_status = DownloadStatus.QUEUED.value if auto_start else DownloadStatus.PAUSED.value
+    # Direct queue/start: If auto_start is true, start downloading immediately!
+    status_to_insert = DownloadStatus.QUEUED.value if auto_start else DownloadStatus.PAUSED.value
 
-    # Auto-detect category based on file extension or filename hints
+    # Auto-detect category
     ext = os.path.splitext(clean_filename)[1].lower()
     cat = item.get("category")
     if not cat:
-        if ext in (".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".iso", ".7zip"):
+        if ext in (".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".iso", ".7zip", ".cab", ".tgz", ".wim"):
             cat = "Compressed"
-        elif ext in (".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt", ".epub"):
+        elif ext in (".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt", ".epub", ".csv", ".rtf"):
             cat = "Documents"
-        elif ext in (".mp3", ".wav", ".flac", ".aac", ".ogg", ".m4a", ".opus", ".wma"):
+        elif ext in (".mp3", ".wav", ".flac", ".aac", ".ogg", ".m4a", ".opus", ".wma", ".mka"):
             cat = "Music"
-        elif ext in (".exe", ".msi", ".dmg", ".pkg", ".deb", ".rpm", ".apk", ".bat"):
+        elif ext in (".exe", ".msi", ".dmg", ".pkg", ".deb", ".rpm", ".apk", ".bat", ".cmd", ".appimage"):
             cat = "Programs"
-        elif ext in (".mp4", ".mkv", ".avi", ".mov", ".flv", ".webm", ".wmv", ".ts", ".m4v", ".3gp"):
+        elif ext in (".mp4", ".mkv", ".avi", ".mov", ".flv", ".webm", ".wmv", ".ts", ".m4v", ".3gp", ".m3u8", ".mpd"):
             cat = "Video"
         else:
             name_lower = clean_filename.lower()
@@ -109,8 +178,6 @@ def handle_download_item(db: DatabaseManager, default_dir: str, default_conns: i
             else:
                 cat = "Other"
 
-    # Select target destination directory (honor category specific folder e.g. save_dir_video)
-    # Security: Ignore arbitrary destination_dir from browser input to prevent directory traversal
     cat_key = f"save_dir_{cat.lower()}"
     default_cat_dir = os.path.join(default_dir, cat) if cat != "Other" else default_dir
     target_dir = db.get_setting(cat_key, default_cat_dir)
@@ -124,33 +191,75 @@ def handle_download_item(db: DatabaseManager, default_dir: str, default_conns: i
     origin = item.get("origin", "")
     proxy = item.get("proxy", "")
 
-    show_start_dlg = db.get_setting("show_start_dlg", "1") == "1"
-
     with db._lock, db._get_connection() as conn:
         cur = conn.execute(
             """
             INSERT INTO downloads (url, destination_path, filename, category, connections_count, status, cookies, referer, user_agent, origin, proxy)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (valid_url, final_path, os.path.basename(final_path), cat, default_conns, initial_status, cookies, referer, user_agent, origin, proxy)
+            (valid_url, final_path, os.path.basename(final_path), cat, default_conns, status_to_insert, cookies, referer, user_agent, origin, proxy)
         )
         dl_id = cur.lastrowid
 
-    if show_start_dlg:
-        db.add_incoming_request(
-            url=valid_url,
-            filename=clean_filename,
-            category=cat,
-            cookies=cookies,
-            referer=referer,
-            user_agent=user_agent,
-            origin=origin,
-            proxy=proxy,
-            auto_start=auto_start,
-            download_id=dl_id
-        )
-
     return dl_id
+
+
+def get_task_progress(db: DatabaseManager, task_id: int) -> dict:
+    with db._lock, db._get_connection() as conn:
+        cur = conn.execute(
+            "SELECT id, status, downloaded_bytes, total_bytes, destination_path, filename, error_message FROM downloads WHERE id = ?",
+            (task_id,)
+        )
+        row = cur.fetchone()
+
+    if not row:
+        return {"status": "error", "error": "Task not found"}
+
+    tid, status_val, downloaded, total, path, fname, err = row
+    status_lower = (status_val or "queued").lower()
+
+    # Calculate real-time speed and ETA
+    now = time.time()
+    speed_bps = 0.0
+    eta_seconds = 0
+
+    if task_id in _speed_tracker:
+        last_time, last_bytes = _speed_tracker[task_id]
+        dt = now - last_time
+        if dt > 0.1:
+            delta_bytes = max(0, (downloaded or 0) - last_bytes)
+            speed_bps = delta_bytes / dt
+            _speed_tracker[task_id] = (now, downloaded or 0)
+    else:
+        _speed_tracker[task_id] = (now, downloaded or 0)
+
+    if total and total > 0 and speed_bps > 0 and downloaded < total:
+        remaining_bytes = total - downloaded
+        eta_seconds = int(remaining_bytes / speed_bps)
+
+    progress = 0.0
+    if total and total > 0:
+        progress = round(min(100.0, (downloaded / total) * 100.0), 1)
+    elif status_lower == "completed":
+        progress = 100.0
+
+    return {
+        "status": "ok",
+        "task": {
+            "id": tid,
+            "status": status_lower,
+            "downloaded": downloaded or 0,
+            "total": total or 0,
+            "progress": progress,
+            "speed_bps": speed_bps,
+            "speed_formatted": format_bytes_speed(speed_bps),
+            "eta_seconds": eta_seconds,
+            "eta_formatted": format_eta(eta_seconds),
+            "filename": fname,
+            "filepath": path,
+            "error": err or ""
+        }
+    }
 
 
 def main():
@@ -183,6 +292,60 @@ def main():
 
                 _ensure_pdm_running()
                 send_message({"status": "ok", "count": len(created_ids), "task_ids": created_ids})
+
+            elif action == "get_progress":
+                task_id = int(msg.get("task_id", 0))
+                send_message(get_task_progress(db, task_id))
+
+            elif action == "pause_task":
+                task_id = int(msg.get("task_id", 0))
+                with db._lock, db._get_connection() as conn:
+                    conn.execute("UPDATE downloads SET status = 'Paused', updated_at = CURRENT_TIMESTAMP WHERE id = ?", (task_id,))
+                _notify_pdm_pump()
+                send_message({"status": "ok"})
+
+            elif action == "resume_task":
+                task_id = int(msg.get("task_id", 0))
+                with db._lock, db._get_connection() as conn:
+                    conn.execute("UPDATE downloads SET status = 'Queued', updated_at = CURRENT_TIMESTAMP WHERE id = ?", (task_id,))
+                _ensure_pdm_running()
+                _notify_pdm_pump()
+                send_message({"status": "ok"})
+
+            elif action == "cancel_task":
+                task_id = int(msg.get("task_id", 0))
+                with db._lock, db._get_connection() as conn:
+                    conn.execute("UPDATE downloads SET status = 'Canceled', updated_at = CURRENT_TIMESTAMP WHERE id = ?", (task_id,))
+                _notify_pdm_pump()
+                send_message({"status": "ok"})
+
+            elif action == "open_file":
+                task_id = int(msg.get("task_id", 0))
+                with db._lock, db._get_connection() as conn:
+                    cur = conn.execute("SELECT destination_path FROM downloads WHERE id = ?", (task_id,))
+                    row = cur.fetchone()
+                if row and row[0] and os.path.exists(row[0]):
+                    os.startfile(row[0])
+                    send_message({"status": "ok"})
+                else:
+                    send_message({"status": "error", "error": "File not found"})
+
+            elif action == "open_folder":
+                task_id = int(msg.get("task_id", 0))
+                with db._lock, db._get_connection() as conn:
+                    cur = conn.execute("SELECT destination_path FROM downloads WHERE id = ?", (task_id,))
+                    row = cur.fetchone()
+                if row and row[0]:
+                    target = os.path.normpath(row[0])
+                    if os.path.exists(target):
+                        subprocess.Popen(["explorer.exe", f"/select,{target}"])
+                    else:
+                        parent = os.path.dirname(target)
+                        if os.path.exists(parent):
+                            os.startfile(parent)
+                    send_message({"status": "ok"})
+                else:
+                    send_message({"status": "error", "error": "Folder not found"})
 
             else:
                 send_message({"status": "error", "error": f"Unknown action: {action}"})

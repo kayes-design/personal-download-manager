@@ -2,12 +2,64 @@
 // Dynamic Video Player Grabber, Multi-Stream Sniffer & Universal Link Interceptor
 
 (function () {
+  const host = (window.location.hostname || "").toLowerCase();
+  if (host.includes("facebook.com") || host.includes("fb.com") || host.includes("fb.watch")) {
+    return; // Completely disable video grabber floater on Facebook
+  }
+
   if (window.__pdm_grabber_initialized) return;
   window.__pdm_grabber_initialized = true;
 
   const capturedStreams = [];
   const selectedStreamUrls = new Set();
-  const overlays = new Map();
+  let globalOverlay = null;
+  let currentMediaEl = null;
+  let isDismissedForPage = false;
+  let customOffsetX = null;
+  let customOffsetY = null;
+  let lastObservedUrl = window.location.href;
+
+  // VnA-Inspired HTMLMediaElement Hook for Dynamic Player & SPA Sniffing
+  try {
+    const hookScript = document.createElement("script");
+    hookScript.textContent = `
+      (function() {
+        const origPlay = HTMLMediaElement.prototype.play;
+        HTMLMediaElement.prototype.play = function() {
+          window.postMessage({ type: 'PDM_MEDIA_PLAY' }, '*');
+          return origPlay.apply(this, arguments);
+        };
+        const origLoad = HTMLMediaElement.prototype.load;
+        HTMLMediaElement.prototype.load = function() {
+          window.postMessage({ type: 'PDM_MEDIA_LOAD' }, '*');
+          return origLoad.apply(this, arguments);
+        };
+      })();
+    `;
+    (document.head || document.documentElement).appendChild(hookScript);
+    hookScript.remove();
+  } catch (e) {}
+
+  window.addEventListener("message", (e) => {
+    if (e.data && (e.data.type === "PDM_MEDIA_PLAY" || e.data.type === "PDM_MEDIA_LOAD")) {
+      requestAnimationFrame(() => scanVideos());
+    }
+  });
+
+  // Video Playing Dimming (Dim floater when playing, restore on pause or hover)
+  document.addEventListener("playing", (e) => {
+    if (e.target && e.target.tagName === "VIDEO") {
+      document.querySelectorAll(".pdm-video-overlay").forEach(p => p.classList.add("pdm-playing-dim"));
+    }
+  }, true);
+
+  document.addEventListener("pause", (e) => {
+    if (e.target && e.target.tagName === "VIDEO") {
+      document.querySelectorAll(".pdm-video-overlay").forEach(p => p.classList.remove("pdm-playing-dim"));
+    }
+  }, true);
+
+
 
   // 1. Identify high-level portals where page URLs are supported for audio+video muxing
   function isPopularMediaPortal(url) {
@@ -37,21 +89,47 @@
     const currentUrl = window.location.href;
     const lower = currentUrl.toLowerCase();
 
-    if (lower.includes("facebook.com") || lower.includes("fb.watch")) {
+    // 1. YouTube & Shorts
+    if (lower.includes("youtube.com") || lower.includes("youtu.be")) {
+      if (lower.includes("/watch?") || lower.includes("/shorts/")) {
+        return currentUrl;
+      }
       if (videoEl) {
-        const article = videoEl.closest('[role="article"], [data-pagelet], [data-virtualized="false"], div[id^="mount_"]');
-        if (article) {
-          const links = article.querySelectorAll('a[href*="/videos/"], a[href*="/reel/"], a[href*="/watch/"], a[href*="story.php"], a[href*="permalink.php"], a[href*="/posts/"]');
+        const item = videoEl.closest("ytd-rich-item-renderer, ytd-video-renderer, ytd-compact-video-renderer, ytd-grid-video-renderer, ytd-reel-video-renderer, ytd-notification-renderer, #movie_player");
+        if (item) {
+          const a = item.querySelector('a[href*="/watch?v="], a[href*="/shorts/"]');
+          if (a && a.href) return a.href;
+        }
+      }
+      return null;
+    }
+
+    // 2. Facebook Reels, Videos, Watch, Posts
+    if (lower.includes("facebook.com") || lower.includes("fb.watch") || lower.includes("fb.com")) {
+      if (lower.includes("/reel/") || lower.includes("/videos/") || lower.includes("/watch/")) {
+        return currentUrl;
+      }
+      if (videoEl) {
+        let p = videoEl.parentElement;
+        let depth = 0;
+        while (p && depth < 25) {
+          const links = p.querySelectorAll('a[href*="/videos/"], a[href*="/reel/"], a[href*="/watch/"], a[href*="story.php"], a[href*="permalink.php"], a[href*="/posts/"]');
           for (const a of links) {
-            if (a.href && !a.href.includes("comment") && !a.href.includes("reaction")) {
+            if (a.href && !a.href.includes("comment") && !a.href.includes("reaction") && !a.href.includes("#")) {
               return a.href;
             }
           }
+          p = p.parentElement;
+          depth++;
         }
       }
-      return currentUrl;
+      if (!currentUrl.endsWith("facebook.com/") && !currentUrl.endsWith("facebook.com")) {
+        return currentUrl;
+      }
+      return null;
     }
 
+    // 3. Instagram Reels, Posts, Stories
     if (lower.includes("instagram.com")) {
       if (videoEl) {
         const article = videoEl.closest("article, main");
@@ -60,18 +138,39 @@
           if (link && link.href) return link.href;
         }
       }
+      if (currentUrl === "https://www.instagram.com/" || currentUrl === "https://www.instagram.com") {
+        return null;
+      }
+      return currentUrl;
+    }
+
+    // 4. TikTok, Twitter/X, Reddit, etc.
+    if (lower.includes("tiktok.com") || lower.includes("x.com") || lower.includes("twitter.com") || lower.includes("reddit.com")) {
       return currentUrl;
     }
 
     return currentUrl;
   }
 
-  // 2. SPA Navigation Reset (YouTube, Facebook, Twitter, Reddit, etc.)
+  // 2. SPA Navigation Reset (YouTube, Twitter, Reddit, etc.)
+  function checkUrlChange() {
+    if (window.location.href !== lastObservedUrl) {
+      lastObservedUrl = window.location.href;
+      isDismissedForPage = false;
+      customOffsetX = null;
+      customOffsetY = null;
+      capturedStreams.length = 0;
+      selectedStreamUrls.clear();
+      if (globalOverlay) {
+        globalOverlay.style.display = "none";
+        const menu = globalOverlay.querySelector(".pdm-stream-menu");
+        if (menu) menu.classList.remove("pdm-show");
+      }
+    }
+  }
+
   function handleNavigation() {
-    capturedStreams.length = 0;
-    selectedStreamUrls.clear();
-    overlays.forEach((overlay) => overlay.remove());
-    overlays.clear();
+    checkUrlChange();
     setTimeout(() => {
       scanMediaElements();
       updateBatchPill();
@@ -289,14 +388,400 @@
     updateAllOverlays();
   }
 
-  // 5. Scan for HTML5 video/audio elements on page (including Reddit & Shadow DOM)
-  function scanMediaElements() {
-    const candidates = [];
+  // 5. Detect and populate standard resolution streams on video portals (YouTube, Reddit, etc.)
+  function ensurePortalResolutionStreams() {
+    if (!isPopularMediaPortal(window.location.href)) return;
 
-    // Standard video and audio tags
+    const portalMediaUrl = getPortalVideoUrl(currentMediaEl);
+    if (!portalMediaUrl) return;
+
+    if (capturedStreams.some((s) => s.isPortalResolution && s.baseUrl === portalMediaUrl)) {
+      return;
+    }
+
+    // Clear older portal resolution entries
+    for (let i = capturedStreams.length - 1; i >= 0; i--) {
+      if (capturedStreams[i].isPortalResolution || capturedStreams[i].isMasterStream) {
+        capturedStreams.splice(i, 1);
+      }
+    }
+
+    const baseTitle = getCleanTitle(currentMediaEl);
+    const dur = (currentMediaEl && currentMediaEl.duration && isFinite(currentMediaEl.duration) && currentMediaEl.duration > 0)
+      ? currentMediaEl.duration
+      : 300;
+
+    const qualities = [
+      { tag: "1080p", label: `${baseTitle} (1080p Full HD)`, res: "1080p • MP4", estMbps: 4.5 },
+      { tag: "720p", label: `${baseTitle} (720p HD)`, res: "720p • MP4", estMbps: 2.2 },
+      { tag: "480p", label: `${baseTitle} (480p Standard)`, res: "480p • MP4", estMbps: 1.0 },
+      { tag: "360p", label: `${baseTitle} (360p Data Saver)`, res: "360p • MP4", estMbps: 0.6 },
+      { tag: "AUDIO", label: `${baseTitle} (Audio Only)`, res: "Audio Track • M4A", estMbps: 0.16, isAudio: true },
+      { tag: "SUB", label: `${baseTitle} (Subtitles / Captions)`, res: "Subtitles • SRT", estMbps: 0.001, isSubtitle: true }
+    ];
+
+    qualities.forEach((q, idx) => {
+      const streamUrl = `${portalMediaUrl}#res=${q.tag.toLowerCase()}`;
+      const estSize = Math.round(dur * (q.estMbps * 1000000 / 8));
+      capturedStreams.push({
+        url: streamUrl,
+        baseUrl: portalMediaUrl,
+        type: q.isAudio ? "audio/mp4" : "video/mp4",
+        label: q.label,
+        resTag: q.tag,
+        resolution: q.res,
+        size: estSize,
+        duration: dur,
+        referer: window.location.href,
+        origin: window.location.origin,
+        isPortalResolution: true
+      });
+      if (idx === 0 && selectedStreamUrls.size === 0) {
+        selectedStreamUrls.add(streamUrl);
+      }
+    });
+
+    updateAllOverlays();
+  }
+
+  // 6. Find Primary Media Element on page to anchor the single floater
+  function getPrimaryMediaElement() {
+    const candidates = [];
+    document.querySelectorAll("video, audio").forEach((el) => candidates.push(el));
+    document.querySelectorAll("shreddit-player-2, shreddit-async-loader").forEach((el) => {
+      if (el.shadowRoot) {
+        el.shadowRoot.querySelectorAll("video").forEach((vel) => candidates.push(vel));
+      }
+    });
+
+    if (candidates.length === 0) return null;
+
+    // A. Priority 1: Actively playing video
+    for (const v of candidates) {
+      if (!v.paused && !v.ended && v.readyState > 2) {
+        const rect = v.getBoundingClientRect();
+        if (rect.width >= 50 && rect.height >= 50 && rect.bottom > 15 && rect.top < window.innerHeight - 15) {
+          return { el: v, rect };
+        }
+      }
+    }
+
+    // B. Priority 2: Largest visible video in viewport
+    let best = null;
+    let maxArea = 0;
+    for (const v of candidates) {
+      const rect = v.getBoundingClientRect();
+      if (rect.width >= 120 && rect.height >= 70 && rect.bottom > 15 && rect.top < window.innerHeight - 15) {
+        const area = rect.width * rect.height;
+        if (area > maxArea) {
+          maxArea = area;
+          best = { el: v, rect };
+        }
+      }
+    }
+    if (best) return best;
+
+    // C. Priority 3: Any candidate in viewport
+    for (const v of candidates) {
+      const rect = v.getBoundingClientRect();
+      if (rect.width >= 40 && rect.height >= 40 && rect.bottom > 10 && rect.top < window.innerHeight - 10) {
+        return { el: v, rect };
+      }
+    }
+
+    return null;
+  }
+
+  // 7. Ensure Exactly ONE Global Floater Instance in DOM
+  function ensureGlobalOverlay() {
+    if (globalOverlay && document.contains(globalOverlay)) {
+      return globalOverlay;
+    }
+
+    if (globalOverlay && !document.contains(globalOverlay)) {
+      document.body.appendChild(globalOverlay);
+      return globalOverlay;
+    }
+
+    const overlay = document.createElement("div");
+    overlay.className = "pdm-video-overlay";
+    overlay.style.display = "none";
+    overlay.innerHTML = `
+      <div class="pdm-floater-container">
+        <div class="pdm-floater-bar">
+          <div class="pdm-grab-drag" title="Drag to move floater">⋮⋮</div>
+          <button class="pdm-grab-button" type="button" title="Click to choose quality & download">
+            <svg class="pdm-grab-icon" viewBox="0 0 24 24">
+              <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
+            </svg>
+            <span class="pdm-stream-badge" style="display:none;" title="Detected streams">0</span>
+          </button>
+          <button class="pdm-grab-close" type="button" title="Hide floater">&times;</button>
+        </div>
+        <div class="pdm-stream-menu">
+          <div class="pdm-menu-header">
+            <span class="pdm-header-title">Detected Resolutions</span>
+            <span class="pdm-select-all">Select All</span>
+          </div>
+          <div class="pdm-stream-list"></div>
+          <div class="pdm-action-row">
+            <button class="pdm-action-btn pdm-action-download" title="Download selected immediately">
+              Download Selected
+            </button>
+            <button class="pdm-action-btn pdm-action-queue" title="Add to queue for later">
+              Add to Queue
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(overlay);
+    globalOverlay = overlay;
+
+    const floaterBar = overlay.querySelector(".pdm-floater-bar");
+    const dragHandle = overlay.querySelector(".pdm-grab-drag");
+    const grabBtn = overlay.querySelector(".pdm-grab-button");
+    const grabBadge = overlay.querySelector(".pdm-stream-badge");
+    const grabClose = overlay.querySelector(".pdm-grab-close");
+    const menu = overlay.querySelector(".pdm-stream-menu");
+    const selectAllBtn = overlay.querySelector(".pdm-select-all");
+    const dlNowBtn = overlay.querySelector(".pdm-action-download");
+    const queueBtn = overlay.querySelector(".pdm-action-queue");
+
+    let isDragging = false;
+    let hasMoved = false;
+    let startX = 0, startY = 0;
+    let startLeft = 0, startTop = 0;
+
+    // Drag to reposition floater smoothly
+    function initDrag(e) {
+      if (e.button !== 0) return;
+      isDragging = true;
+      hasMoved = false;
+      startX = e.clientX;
+      startY = e.clientY;
+
+      const oRect = overlay.getBoundingClientRect();
+      startLeft = oRect.left;
+      startTop = oRect.top;
+
+      document.body.style.userSelect = "none";
+
+      function onMouseMove(moveEvent) {
+        if (!isDragging) return;
+        const dx = moveEvent.clientX - startX;
+        const dy = moveEvent.clientY - startY;
+
+        if (Math.hypot(dx, dy) > 5) {
+          hasMoved = true;
+          overlay.classList.add("pdm-dragging");
+        }
+
+        if (hasMoved) {
+          const newLeft = startLeft + dx;
+          const newTop = startTop + dy;
+          overlay.style.left = `${newLeft}px`;
+          overlay.style.top = `${newTop}px`;
+
+          const primary = getPrimaryMediaElement();
+          if (primary && primary.rect) {
+            customOffsetX = newLeft - primary.rect.left;
+            customOffsetY = newTop - primary.rect.top;
+          } else {
+            customOffsetX = newLeft;
+            customOffsetY = newTop;
+          }
+        }
+      }
+
+      function onMouseUp() {
+        if (!isDragging) return;
+        isDragging = false;
+        document.body.style.userSelect = "";
+        overlay.classList.remove("pdm-dragging");
+        window.removeEventListener("mousemove", onMouseMove, true);
+        window.removeEventListener("mouseup", onMouseUp, true);
+        if (hasMoved) {
+          setTimeout(() => { hasMoved = false; }, 120);
+        }
+      }
+
+      window.addEventListener("mousemove", onMouseMove, true);
+      window.addEventListener("mouseup", onMouseUp, true);
+    }
+
+    dragHandle.addEventListener("mousedown", initDrag);
+    floaterBar.addEventListener("mousedown", (e) => {
+      if (e.target.closest(".pdm-grab-button") || e.target.closest(".pdm-grab-close")) return;
+      initDrag(e);
+    });
+
+    // Dismiss / Close button (✕)
+    grabClose.addEventListener("click", (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      isDismissedForPage = true;
+      overlay.style.transition = "opacity 0.2s ease, transform 0.2s ease";
+      overlay.style.opacity = "0";
+      overlay.style.transform = "scale(0.8)";
+      setTimeout(() => {
+        overlay.style.display = "none";
+        overlay.style.opacity = "1";
+        overlay.style.transform = "none";
+      }, 200);
+    });
+
+    // Toggle resolution dropdown popup
+    grabBtn.addEventListener("click", (e) => {
+      if (hasMoved) {
+        hasMoved = false;
+        return;
+      }
+      e.stopPropagation();
+      e.preventDefault();
+
+      if (isPopularMediaPortal(window.location.href)) {
+        ensurePortalResolutionStreams();
+      }
+
+      const willShow = !menu.classList.contains("pdm-show");
+      if (willShow) {
+        // Adjust dropdown position relative to viewport boundaries
+        const rect = overlay.getBoundingClientRect();
+        if (rect.bottom > window.innerHeight - 260) {
+          menu.style.top = "auto";
+          menu.style.bottom = "100%";
+          menu.style.marginTop = "0";
+          menu.style.marginBottom = "6px";
+        } else {
+          menu.style.top = "100%";
+          menu.style.bottom = "auto";
+          menu.style.marginTop = "6px";
+          menu.style.marginBottom = "0";
+        }
+        if (rect.right < 320) {
+          menu.style.right = "auto";
+          menu.style.left = "0";
+        } else {
+          menu.style.right = "0";
+          menu.style.left = "auto";
+        }
+
+        menu.classList.add("pdm-show");
+        renderStreamList(overlay);
+      } else {
+        menu.classList.remove("pdm-show");
+      }
+    });
+
+    // Toggle menu on badge click
+    grabBadge.addEventListener("click", (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      menu.classList.toggle("pdm-show");
+      if (menu.classList.contains("pdm-show")) {
+        renderStreamList(overlay);
+      }
+    });
+
+    // Toggle menu on right-click anywhere on button
+    grabBtn.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      menu.classList.toggle("pdm-show");
+      if (menu.classList.contains("pdm-show")) {
+        renderStreamList(overlay);
+      }
+    });
+
+    // Close menu when clicking outside
+    document.addEventListener("click", (e) => {
+      if (!overlay.contains(e.target)) {
+        menu.classList.remove("pdm-show");
+      }
+    });
+
+    menu.addEventListener("click", (e) => {
+      e.stopPropagation();
+    });
+
+    // Select All toggle
+    selectAllBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const allSelected = capturedStreams.length > 0 && capturedStreams.every((s) => selectedStreamUrls.has(s.url));
+      if (allSelected) {
+        selectedStreamUrls.clear();
+      } else {
+        capturedStreams.forEach((s) => selectedStreamUrls.add(s.url));
+      }
+      renderStreamList(overlay);
+    });
+
+    // Download Selected
+    dlNowBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      menu.classList.remove("pdm-show");
+      executeSelectedDownloads(true);
+    });
+
+    // Add to Queue
+    queueBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      menu.classList.remove("pdm-show");
+      executeSelectedDownloads(false);
+    });
+
+    return overlay;
+  }
+
+  // 8. Position the Single Floater Exactly on Active Video
+  function repositionGlobalOverlay() {
+    if (isDismissedForPage) {
+      if (globalOverlay) globalOverlay.style.display = "none";
+      return;
+    }
+
+    const primary = getPrimaryMediaElement();
+    if (!primary || !primary.el || !primary.rect) {
+      if (globalOverlay) globalOverlay.style.display = "none";
+      return;
+    }
+
+    const overlay = ensureGlobalOverlay();
+    const rect = primary.rect;
+    currentMediaEl = primary.el;
+
+    // Fullscreen support
+    const fsEl = document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement;
+    if (fsEl) {
+      if (overlay.parentElement !== fsEl) fsEl.appendChild(overlay);
+    } else {
+      if (overlay.parentElement !== document.body) document.body.appendChild(overlay);
+    }
+
+    overlay.style.position = "fixed";
+    overlay.style.zIndex = "2147483647";
+    overlay.style.display = "block";
+
+    if (customOffsetX !== null && customOffsetY !== null) {
+      overlay.style.left = `${Math.max(4, rect.left + customOffsetX)}px`;
+      overlay.style.top = `${Math.max(4, rect.top + customOffsetY)}px`;
+    } else {
+      const barRect = overlay.getBoundingClientRect();
+      const currentWidth = barRect.width > 20 ? barRect.width : 70;
+      overlay.style.top = `${Math.max(8, rect.top + 10)}px`;
+      overlay.style.left = `${Math.max(8, rect.right - currentWidth - 14)}px`;
+    }
+  }
+
+  // 9. Scan for Media Elements across DOM
+  function scanMediaElements() {
+    checkUrlChange();
+
+    const candidates = [];
     document.querySelectorAll("video, audio").forEach((el) => candidates.push(el));
 
-    // Reddit custom player components
     document.querySelectorAll("shreddit-player-2, shreddit-async-loader").forEach((el) => {
       if (el.shadowRoot) {
         el.shadowRoot.querySelectorAll("video").forEach((vel) => candidates.push(vel));
@@ -312,7 +797,6 @@
           resTag: res ? res.tag : "",
           resolution: res ? res.full : ""
         }, vel);
-        attachOverlay(el, vel);
       }
     });
 
@@ -340,336 +824,26 @@
           }, el);
         }
       });
-
-      attachOverlay(el, el);
     });
 
-    // Only offer clean merged video URL on known platforms where media stream downloader handles audio+video muxing
-    if (candidates.length > 0 && isPopularMediaPortal(window.location.href)) {
-      const primaryVideo = candidates.find((c) => c.tagName && c.tagName.toLowerCase() === "video");
-      const portalMediaUrl = getPortalVideoUrl(primaryVideo);
-      const pRes = detectResolution(primaryVideo, portalMediaUrl);
-      if (!capturedStreams.some((s) => s.isMasterStream)) {
-        addStream({
-          url: portalMediaUrl,
-          type: "video/mp4",
-          label: "🎬 Download Complete Video (Full HD + Audio)",
-          resTag: (pRes && pRes.tag) ? pRes.tag : "1080p",
-          resolution: (pRes && pRes.full) ? pRes.full : "Full HD with Audio",
-          referer: window.location.href,
-          isMasterStream: true
-        }, primaryVideo, true);
-      }
-    }
-  }
-
-  // 6. Attach Floating Download Overlay onto Video Element
-  function attachOverlay(videoEl, actualVideoEl = null) {
-    if (overlays.has(videoEl)) return;
-
-    const activeVideo = actualVideoEl || (videoEl.tagName && videoEl.tagName.toLowerCase() === "video" ? videoEl : (videoEl.querySelector ? videoEl.querySelector("video") : null));
-
-    const overlay = document.createElement("div");
-    overlay.className = "pdm-video-overlay";
-    overlay.innerHTML = `
-      <div class="pdm-grab-pill" title="Personal Download Manager">
-        <div class="pdm-grab-handle" title="Drag to reposition panel">
-          <svg viewBox="0 0 24 24" class="pdm-drag-icon">
-            <path d="M9 5h2v2H9V5zm0 6h2v2H9v-2zm0 6h2v2H9v-2zm4-12h2v2h-2V5zm0 6h2v2h-2v-2zm0 6h2v2h-2v-2z"/>
-          </svg>
-        </div>
-        <div class="pdm-grab-action" title="Download this video with PDM">
-          <svg class="pdm-grab-icon" viewBox="0 0 24 24" style="width:14px;height:14px;fill:currentColor;">
-            <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
-          </svg>
-          <span class="pdm-grab-label">Download Video</span>
-          <span class="pdm-stream-badge" style="display:none;background:#2563eb;color:#fff;border-radius:10px;padding:1px 5px;font-size:10px;margin-left:4px;">0</span>
-        </div>
-        <div class="pdm-grab-dropdown" title="Select Quality / Streams">▼</div>
-        <div class="pdm-grab-close" title="Hide for this video">✕</div>
-      </div>
-      <div class="pdm-stream-menu">
-        <div class="pdm-menu-header">
-          <span class="pdm-header-title">Detected Streams</span>
-          <span class="pdm-select-all">Select All</span>
-        </div>
-        <div class="pdm-stream-list"></div>
-        <div class="pdm-action-row">
-          <button class="pdm-action-btn pdm-action-download" title="Download selected immediately">
-            ▶ Download Now
-          </button>
-          <button class="pdm-action-btn pdm-action-queue" title="Add to queue for later">
-            ⏳ Add to Queue
-          </button>
-        </div>
-      </div>
-    `;
-
-    document.body.appendChild(overlay);
-    overlays.set(videoEl, overlay);
-
-    const grabHandle = overlay.querySelector(".pdm-grab-handle");
-    const grabAction = overlay.querySelector(".pdm-grab-action");
-    const grabDropdown = overlay.querySelector(".pdm-grab-dropdown");
-    const grabClose = overlay.querySelector(".pdm-grab-close");
-    const menu = overlay.querySelector(".pdm-stream-menu");
-    const selectAllBtn = overlay.querySelector(".pdm-select-all");
-    const dlNowBtn = overlay.querySelector(".pdm-action-download");
-    const queueBtn = overlay.querySelector(".pdm-action-queue");
-
-    let customOffsetX = null;
-    let customOffsetY = null;
-    let isDragging = false;
-    let startX = 0, startY = 0;
-    let startLeft = 0, startTop = 0;
-
-    // Drag to reposition floater
-    grabHandle.addEventListener("mousedown", (e) => {
-      if (e.button !== 0) return;
-      e.preventDefault();
-      e.stopPropagation();
-      isDragging = true;
-      startX = e.clientX;
-      startY = e.clientY;
-
-      const oRect = overlay.getBoundingClientRect();
-      startLeft = oRect.left + window.scrollX;
-      startTop = oRect.top + window.scrollY;
-
-      document.body.style.userSelect = "none";
-      overlay.classList.add("pdm-dragging");
-
-      function onMouseMove(moveEvent) {
-        if (!isDragging) return;
-        const dx = moveEvent.clientX - startX;
-        const dy = moveEvent.clientY - startY;
-
-        const newLeft = startLeft + dx;
-        const newTop = startTop + dy;
-        overlay.style.left = `${newLeft}px`;
-        overlay.style.top = `${newTop}px`;
-
-        const vRect = videoEl.getBoundingClientRect();
-        customOffsetX = newLeft - (vRect.left + window.scrollX);
-        customOffsetY = newTop - (vRect.top + window.scrollY);
-      }
-
-      function onMouseUp() {
-        if (!isDragging) return;
-        isDragging = false;
-        document.body.style.userSelect = "";
-        overlay.classList.remove("pdm-dragging");
-        window.removeEventListener("mousemove", onMouseMove, true);
-        window.removeEventListener("mouseup", onMouseUp, true);
-      }
-
-      window.addEventListener("mousemove", onMouseMove, true);
-      window.addEventListener("mouseup", onMouseUp, true);
-    });
-
-    // Close / Dismiss button (Hide for this video)
-    grabClose.addEventListener("click", (e) => {
-      e.stopPropagation();
-      e.preventDefault();
-      overlay.dataset.dismissed = "true";
-      overlay.style.transition = "opacity 0.2s ease, transform 0.2s ease";
-      overlay.style.opacity = "0";
-      overlay.style.transform = "scale(0.85)";
-      setTimeout(() => {
-        overlay.style.display = "none";
-      }, 200);
-    });
-
-    function updateLabelAndResolution() {
-      if (activeVideo) {
-        const res = detectResolution(activeVideo, activeVideo.currentSrc || activeVideo.src);
-        if (grabAction) {
-          const lbl = grabAction.querySelector(".pdm-grab-label");
-          if (res && res.tag && res.tag !== "AUDIO") {
-            grabAction.title = `Download Video (${res.tag}) with PDM`;
-            if (lbl) lbl.textContent = `Download (${res.tag})`;
-          } else {
-            grabAction.title = "Download Video with PDM";
-            if (lbl) lbl.textContent = "Download Video";
-          }
-        }
-
-        const pageUrl = window.location.href;
-        const pageStream = capturedStreams.find((s) => s.url === pageUrl);
-        if (pageStream && res) {
-          pageStream.resTag = res.tag;
-          pageStream.resolution = res.full;
-        }
-
-        const directSrc = activeVideo.currentSrc || activeVideo.src;
-        if (directSrc) {
-          const directStream = capturedStreams.find((s) => s.url === directSrc);
-          if (directStream && res) {
-            directStream.resTag = res.tag;
-            directStream.resolution = res.full;
-          }
-        }
-      }
-      reposition();
+    if (isPopularMediaPortal(window.location.href)) {
+      ensurePortalResolutionStreams();
     }
 
-    if (activeVideo) {
-      activeVideo.addEventListener("loadedmetadata", updateLabelAndResolution);
-      activeVideo.addEventListener("durationchange", updateLabelAndResolution);
-      activeVideo.addEventListener("play", updateLabelAndResolution);
-      activeVideo.addEventListener("playing", updateLabelAndResolution);
-      activeVideo.addEventListener("canplay", updateLabelAndResolution);
-      updateLabelAndResolution();
-    }
-
-    // Direct download trigger on main button click
-    grabAction.addEventListener("click", (e) => {
-      e.stopPropagation();
-      e.preventDefault();
-      executeDirectVideoDownload(true);
-    });
-
-    // Toggle menu on dropdown arrow click
-    grabDropdown.addEventListener("click", (e) => {
-      e.stopPropagation();
-      e.preventDefault();
-      updateLabelAndResolution();
-      menu.classList.toggle("pdm-show");
-      renderStreamList(overlay);
-    });
-
-    // Close menu when clicking outside
-    document.addEventListener("click", () => {
-      menu.classList.remove("pdm-show");
-    });
-
-    menu.addEventListener("click", (e) => {
-      e.stopPropagation();
-    });
-
-    // Select All toggle
-    selectAllBtn.addEventListener("click", () => {
-      const allSelected = capturedStreams.every((s) => selectedStreamUrls.has(s.url));
-      if (allSelected) {
-        selectedStreamUrls.clear();
-      } else {
-        capturedStreams.forEach((s) => selectedStreamUrls.add(s.url));
-      }
-      renderStreamList(overlay);
-    });
-
-    // Download Now Action
-    dlNowBtn.addEventListener("click", () => {
-      menu.classList.remove("pdm-show");
-      executeSelectedDownloads(true);
-    });
-
-    // Add to Queue Action
-    queueBtn.addEventListener("click", () => {
-      menu.classList.remove("pdm-show");
-      executeSelectedDownloads(false);
-    });
-
-    function executeDirectVideoDownload(autoStart = true) {
-      updateLabelAndResolution();
-
-      let targetUrl = "";
-      let targetType = "video/mp4";
-      let targetCookies = "";
-      let targetReferer = window.location.href;
-      let targetOrigin = window.location.origin;
-
-      const master = capturedStreams.find((s) => s.isMasterStream);
-      if (master) {
-        targetUrl = master.url;
-        targetType = master.type || "video/mp4";
-        targetCookies = master.cookies || "";
-        targetReferer = master.referer || window.location.href;
-        targetOrigin = master.origin || window.location.origin;
-      } else if (capturedStreams.length > 0) {
-        const best = capturedStreams[0];
-        targetUrl = best.url;
-        targetType = best.type || "video/mp4";
-        targetCookies = best.cookies || "";
-        targetReferer = best.referer || window.location.href;
-        targetOrigin = best.origin || window.location.origin;
-      } else {
-        let direct = (activeVideo && (activeVideo.currentSrc || activeVideo.src)) || videoEl.currentSrc || videoEl.src;
-        if (!direct || direct.startsWith("blob:")) {
-          if (isPopularMediaPortal(window.location.href)) {
-            direct = getPortalVideoUrl(activeVideo) || window.location.href;
-          } else {
-            direct = null;
-          }
-        }
-        if (direct && direct.startsWith("http")) {
-          targetUrl = direct;
-        }
-      }
-
-      if (!targetUrl) {
-        showToast("Stream loading... Please click play on the video player.");
-        return;
-      }
-
-      const baseTitle = getCleanTitle(activeVideo || videoEl);
-      const ext = targetType.includes("audio") ? ".mp3" : ".mp4";
-      const filename = baseTitle.toLowerCase().endsWith(ext) ? baseTitle : `${baseTitle}${ext}`;
-
-      sendBatchToPDM([{
-        url: targetUrl,
-        filename: filename,
-        auto_start: autoStart,
-        referer: targetReferer,
-        origin: targetOrigin,
-        user_agent: navigator.userAgent,
-        cookies: targetCookies
-      }], autoStart);
-    }
-
-    // Position tracking
-    function reposition() {
-      if (overlay.dataset.dismissed === "true") {
-        overlay.style.display = "none";
-        return;
-      }
-      if (!document.body.contains(videoEl)) {
-        overlay.remove();
-        overlays.delete(videoEl);
-        return;
-      }
-      const rect = videoEl.getBoundingClientRect();
-      if (rect.width < 100 || rect.height < 80 || rect.bottom < 0 || rect.top > window.innerHeight) {
-        overlay.style.display = "none";
-        return;
-      }
-
-      overlay.style.display = "block";
-      if (customOffsetX !== null && customOffsetY !== null) {
-        overlay.style.left = `${Math.max(4, window.scrollX + rect.left + customOffsetX)}px`;
-        overlay.style.top = `${Math.max(4, window.scrollY + rect.top + customOffsetY)}px`;
-      } else {
-        const pillWidth = overlay.offsetWidth || 190;
-        overlay.style.top = `${Math.max(6, window.scrollY + rect.top + 8)}px`;
-        overlay.style.left = `${Math.max(6, window.scrollX + rect.right - pillWidth - 10)}px`;
-      }
-    }
-
-    window.addEventListener("scroll", reposition, { passive: true });
-    window.addEventListener("resize", reposition, { passive: true });
-
-    reposition();
+    repositionGlobalOverlay();
   }
 
   function updateAllOverlays() {
-    overlays.forEach((overlay) => {
-      const badge = overlay.querySelector(".pdm-stream-badge");
-      if (badge) {
-        badge.textContent = capturedStreams.length;
-        badge.style.display = capturedStreams.length > 0 ? "inline-block" : "none";
-      }
-      renderStreamList(overlay);
-    });
+    if (!globalOverlay) return;
+    const badge = globalOverlay.querySelector(".pdm-stream-badge");
+    if (badge) {
+      badge.textContent = capturedStreams.length;
+      badge.style.display = capturedStreams.length > 0 ? "inline-block" : "none";
+    }
+    const menu = globalOverlay.querySelector(".pdm-stream-menu");
+    if (menu && menu.classList.contains("pdm-show")) {
+      renderStreamList(globalOverlay);
+    }
   }
 
   function renderStreamList(overlay) {
@@ -724,20 +898,27 @@
 
       function triggerThisStream(e) {
         e.stopPropagation();
-        const baseTitle = getCleanTitle(document.querySelector("video"));
-        const ext = stream.type && stream.type.includes("audio") ? ".mp3" : ".mp4";
+        const baseTitle = getCleanTitle(currentMediaEl || document.querySelector("video"));
+        let ext = ".mp4";
+        if (stream.resTag === "SUB" || stream.isSubtitle) {
+          ext = ".srt";
+        } else if (stream.type && stream.type.includes("audio")) {
+          ext = ".m4a";
+        }
         const filename = baseTitle.toLowerCase().endsWith(ext) ? baseTitle : `${baseTitle}${ext}`;
-        sendBatchToPDM([{
+        const menu = overlay.querySelector(".pdm-stream-menu");
+        if (menu) menu.classList.remove("pdm-show");
+
+        showPreDownloadCard({
           url: stream.url,
           filename: filename,
-          auto_start: true,
+          resolution: stream.resTag || stream.resolution || "HD Video",
+          size: stream.size || 0,
           referer: stream.referer || window.location.href,
           origin: stream.origin || window.location.origin,
           user_agent: stream.userAgent || navigator.userAgent,
           cookies: stream.cookies || ""
-        }], true);
-        const menu = overlay.querySelector(".pdm-stream-menu");
-        if (menu) menu.classList.remove("pdm-show");
+        });
       }
 
       quickDlBtn.addEventListener("click", triggerThisStream);
@@ -770,212 +951,465 @@
       }
     }
 
-    // Default to the single best selected stream to prevent downloading fragmented split pieces of the same video
-    const target = targets[0];
-    const baseTitle = getCleanTitle(document.querySelector("video"));
-    const ext = target.type && target.type.includes("audio") ? ".mp3" : ".mp4";
-    const filename = baseTitle.toLowerCase().endsWith(ext) ? baseTitle : `${baseTitle}${ext}`;
+    const baseTitle = getCleanTitle(currentMediaEl || document.querySelector("video"));
+    const items = targets.map((target, idx) => {
+      let ext = ".mp4";
+      if (target.resTag === "SUB" || target.isSubtitle) {
+        ext = ".srt";
+      } else if (target.type && target.type.includes("audio")) {
+        ext = ".m4a";
+      }
+      const label = target.resTag ? `_${target.resTag.toLowerCase()}` : "";
+      const baseName = baseTitle.toLowerCase().endsWith(ext)
+        ? baseTitle.substring(0, baseTitle.length - ext.length)
+        : baseTitle;
+      const filename = targets.length > 1
+        ? `${baseName}${label}${ext}`
+        : (baseTitle.toLowerCase().endsWith(ext) ? baseTitle : `${baseTitle}${ext}`);
 
-    const items = [{
-      url: target.url,
-      filename: filename,
-      auto_start: autoStart,
-      referer: target.referer || window.location.href,
-      origin: target.origin || window.location.origin,
-      user_agent: target.userAgent || navigator.userAgent,
-      cookies: target.cookies || ""
-    }];
+      return {
+        url: target.url,
+        filename: filename,
+        auto_start: autoStart,
+        referer: target.referer || window.location.href,
+        origin: target.origin || window.location.origin,
+        user_agent: target.userAgent || navigator.userAgent,
+        cookies: target.cookies || ""
+      };
+    });
 
     sendBatchToPDM(items, autoStart);
   }
 
-  function sendBatchToPDM(items, autoStart) {
+    function sendBatchToPDM(items, autoStart) {
     chrome.runtime.sendMessage({
       action: "batch_download_native",
       items: items
     }, (resp) => {
       if (resp && resp.status === "ok") {
-        overlays.forEach((overlay) => {
-          const pill = overlay.querySelector(".pdm-grab-pill");
+        if (globalOverlay) {
+          const pill = globalOverlay.querySelector(".pdm-grab-button");
           if (pill) {
             pill.classList.add("pdm-btn-success");
             setTimeout(() => {
               pill.classList.remove("pdm-btn-success");
             }, 3000);
           }
-        });
+        }
+        if (resp.data && resp.data.task_ids && resp.data.task_ids.length > 0) {
+          if (autoStart) {
+            startActiveDownloadHUD(resp.data.task_ids[0], items[0].filename, 0);
+          } else {
+            renderQueuedNotice(items[0].filename);
+          }
+        } else {
+          showToast("⚡ Sent download to Personal Download Manager!");
+        }
       } else {
         const err = (resp && resp.error) || "Host connection failed. Ensure PDM is running.";
-        showToast(`❌ Connection Error: ${err}`);
+        showToast(`Connection Error: ${err}`);
       }
     });
   }
 
   function showToast(message) {
-    const existing = document.getElementById("pdm-toast-banner");
-    if (existing) existing.remove();
+    let t = document.getElementById("pdm-quick-toast");
+    if (!t) {
+      t = document.createElement("div");
+      t.id = "pdm-quick-toast";
+      t.style.cssText = "position:fixed;bottom:24px;right:24px;background:#1e293b;color:#f8fafc;padding:9px 16px;border-radius:8px;font-size:12px;z-index:2147483647;border:1px solid #334155;box-shadow:0 8px 24px rgba(0,0,0,0.5);transition:opacity 0.3s;font-family:system-ui,sans-serif;";
+      document.body.appendChild(t);
+    }
+    t.innerText = message;
+    t.style.opacity = "1";
+    setTimeout(() => { if (t) t.style.opacity = "0"; }, 3500);
+  }
 
-    const toast = document.createElement("div");
-    toast.id = "pdm-toast-banner";
-    toast.className = "pdm-toast-banner";
-    toast.innerHTML = `
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="#22c55e">
-        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
-      </svg>
-      <span>${escapeHtml(message)}</span>
+  // ==========================================================================
+  // IN-PAGE ACTIVE DOWNLOAD CARD (FLOATING HUD) CONTROLLER & TWO-WAY SYNC
+  // ==========================================================================
+  let activeCardEl = null;
+  let miniBadgeEl = null;
+  let activeProgressInterval = null;
+  let currentActiveTaskId = null;
+
+  function getActiveCard() {
+    if (!activeCardEl || !document.body.contains(activeCardEl)) {
+      activeCardEl = document.getElementById("pdm-active-card");
+      if (!activeCardEl) {
+        activeCardEl = document.createElement("div");
+        activeCardEl.id = "pdm-active-card";
+        document.body.appendChild(activeCardEl);
+      }
+    }
+    return activeCardEl;
+  }
+
+  function getMiniBadge() {
+    if (!miniBadgeEl || !document.body.contains(miniBadgeEl)) {
+      miniBadgeEl = document.getElementById("pdm-mini-badge");
+      if (!miniBadgeEl) {
+        miniBadgeEl = document.createElement("div");
+        miniBadgeEl.id = "pdm-mini-badge";
+        miniBadgeEl.style.display = "none";
+        miniBadgeEl.innerHTML = `
+          <span style="font-size:14px;color:#38bdf8;">⚡</span>
+          <span class="pdm-mini-percent" id="pdm-mini-pct">0%</span>
+          <span class="pdm-mini-speed" id="pdm-mini-spd">0 KB/s</span>
+        `;
+        miniBadgeEl.addEventListener("click", () => {
+          miniBadgeEl.style.display = "none";
+          if (activeCardEl) activeCardEl.style.display = "block";
+        });
+        document.body.appendChild(miniBadgeEl);
+      }
+    }
+    return miniBadgeEl;
+  }
+
+  function showPreDownloadCard(opts) {
+    const card = getActiveCard();
+    const badge = getMiniBadge();
+    badge.style.display = "none";
+    card.style.display = "block";
+
+    if (activeProgressInterval) {
+      clearInterval(activeProgressInterval);
+      activeProgressInterval = null;
+    }
+
+    const filename = opts.filename || "Video_Download.mp4";
+    const sizeStr = opts.size && opts.size > 0 ? formatBytes(opts.size) : "Ready";
+    const resTag = opts.resolution || "HD Video";
+
+    card.innerHTML = `
+      <div class="pdm-card-header">
+        <div class="pdm-card-brand">
+          <div class="pdm-card-logo">P</div>
+          <span class="pdm-card-title">Personal Download Manager</span>
+        </div>
+        <span class="pdm-card-status-pill pdm-status-confirm">Confirm</span>
+        <div class="pdm-card-controls">
+          <button class="pdm-icon-btn" id="pdm-card-close" title="Close">✕</button>
+        </div>
+      </div>
+      <div class="pdm-card-body">
+        <div class="pdm-file-box">
+          <div class="pdm-filename" title="${escapeHtml(filename)}">${escapeHtml(filename)}</div>
+          <div class="pdm-file-meta">
+            <span class="pdm-meta-tag pdm-meta-res">${escapeHtml(resTag)}</span>
+            <span class="pdm-meta-tag">${escapeHtml(sizeStr)}</span>
+          </div>
+        </div>
+        <div class="pdm-action-row">
+          <button class="pdm-btn-primary" id="pdm-action-download-now">
+            <span>⚡ Download Now</span>
+          </button>
+          <button class="pdm-btn-secondary" id="pdm-action-download-later">
+            <span>🕒 Download Later (Queue)</span>
+          </button>
+        </div>
+      </div>
     `;
 
-    document.body.appendChild(toast);
+    card.querySelector("#pdm-card-close").onclick = () => {
+      card.style.display = "none";
+    };
+
+    // Download Now Handler
+    card.querySelector("#pdm-action-download-now").onclick = () => {
+      card.querySelector("#pdm-action-download-now").innerHTML = "<span>Connecting...</span>";
+      chrome.runtime.sendMessage({
+        action: "download_via_native",
+        url: opts.url,
+        filename: filename,
+        auto_start: true,
+        referer: opts.referer || window.location.href,
+        origin: opts.origin || window.location.origin,
+        user_agent: opts.user_agent || navigator.userAgent,
+        cookies: opts.cookies || ""
+      }, (resp) => {
+        if (resp && resp.status === "ok" && resp.data && resp.data.task_ids && resp.data.task_ids.length > 0) {
+          startActiveDownloadHUD(resp.data.task_ids[0], filename, opts.size || 0);
+        } else {
+          showCardError((resp && resp.error) || "Host connection failed. Check if PDM is running.");
+        }
+      });
+    };
+
+    // Download Later / Queue Handler
+    card.querySelector("#pdm-action-download-later").onclick = () => {
+      chrome.runtime.sendMessage({
+        action: "download_via_native",
+        url: opts.url,
+        filename: filename,
+        auto_start: false,
+        referer: opts.referer || window.location.href,
+        origin: opts.origin || window.location.origin,
+        user_agent: opts.user_agent || navigator.userAgent,
+        cookies: opts.cookies || ""
+      }, (resp) => {
+        if (resp && resp.status === "ok") {
+          renderQueuedNotice(filename);
+        } else {
+          showCardError((resp && resp.error) || "Failed to add to queue.");
+        }
+      });
+    };
+  }
+
+  function renderQueuedNotice(filename) {
+    const card = getActiveCard();
+    card.innerHTML = `
+      <div class="pdm-card-header">
+        <div class="pdm-card-brand">
+          <div class="pdm-card-logo">P</div>
+          <span class="pdm-card-title">Personal Download Manager</span>
+        </div>
+        <span class="pdm-card-status-pill pdm-status-paused">Queued 🕒</span>
+        <div class="pdm-card-controls">
+          <button class="pdm-icon-btn" id="pdm-card-close" title="Close">✕</button>
+        </div>
+      </div>
+      <div class="pdm-card-body">
+        <div class="pdm-file-box">
+          <div class="pdm-filename" title="${escapeHtml(filename)}">${escapeHtml(filename)}</div>
+          <div style="font-size:11.5px;color:#94a3b8;margin-top:6px;">
+            ✓ Saved to PDM Download Queue in Paused state. You can resume or schedule this download anytime from the desktop app.
+          </div>
+        </div>
+        <div class="pdm-action-row">
+          <button class="pdm-btn-secondary" id="pdm-action-done" style="width:100%;">
+            <span>Done</span>
+          </button>
+        </div>
+      </div>
+    `;
+    card.querySelector("#pdm-card-close").onclick = () => { card.style.display = "none"; };
+    card.querySelector("#pdm-action-done").onclick = () => { card.style.display = "none"; };
     setTimeout(() => {
-      toast.style.opacity = "0";
-      toast.style.transition = "opacity 0.4s ease";
-      setTimeout(() => toast.remove(), 400);
-    }, 4000);
+      if (card && card.style.display !== "none") card.style.display = "none";
+    }, 4500);
   }
 
-  function getCleanTitle(videoEl = null) {
-    let title = "";
-    if (videoEl) {
-      const container = videoEl.closest('[role="article"], [data-pagelet], article, .post');
-      if (container) {
-        const textEl = container.querySelector('[data-ad-preview="message"], [data-testid="post_message"], h1, h2, h3, p');
-        if (textEl && textEl.innerText && textEl.innerText.trim().length > 3) {
-          title = textEl.innerText.trim().split("\n")[0];
+  function startActiveDownloadHUD(taskId, filename, size) {
+    currentActiveTaskId = taskId;
+    const card = getActiveCard();
+    const badge = getMiniBadge();
+    badge.style.display = "none";
+    card.style.display = "block";
+
+    card.innerHTML = `
+      <div class="pdm-card-header">
+        <div class="pdm-card-brand">
+          <div class="pdm-card-logo">P</div>
+          <span class="pdm-card-title">Personal Download Manager</span>
+        </div>
+        <span class="pdm-card-status-pill pdm-status-downloading" id="pdm-hud-status">Downloading ⚡</span>
+        <div class="pdm-card-controls">
+          <button class="pdm-icon-btn" id="pdm-hud-mini" title="Minimize to Corner Badge">🗕</button>
+          <button class="pdm-icon-btn" id="pdm-card-close" title="Close">✕</button>
+        </div>
+      </div>
+      <div class="pdm-card-body">
+        <div class="pdm-file-box">
+          <div class="pdm-filename" id="pdm-hud-filename" title="${escapeHtml(filename)}">${escapeHtml(filename)}</div>
+        </div>
+        <div class="pdm-progress-track">
+          <div class="pdm-progress-fill" id="pdm-hud-bar" style="width: 0%;"></div>
+        </div>
+        <div class="pdm-stats-row">
+          <div class="pdm-stat-left">
+            <span class="pdm-stat-percent" id="pdm-hud-pct">0%</span>
+            <span class="pdm-stat-speed" id="pdm-hud-spd">⚡ 0 KB/s</span>
+          </div>
+          <div class="pdm-stat-right">
+            <span id="pdm-hud-bytes">0 MB / ...</span>
+            <span id="pdm-hud-eta">⏱️ ...</span>
+          </div>
+        </div>
+        <div class="pdm-action-row" id="pdm-hud-actions">
+          <button class="pdm-btn-secondary" id="pdm-btn-pause-resume">
+            <span id="pdm-lbl-pause">⏸️ Pause</span>
+          </button>
+          <button class="pdm-btn-danger" id="pdm-btn-cancel">
+            <span>✕ Cancel</span>
+          </button>
+        </div>
+      </div>
+    `;
+
+    // Close button
+    card.querySelector("#pdm-card-close").onclick = () => {
+      card.style.display = "none";
+      badge.style.display = "none";
+      if (activeProgressInterval) {
+        clearInterval(activeProgressInterval);
+        activeProgressInterval = null;
+      }
+    };
+
+    // Minimize button
+    card.querySelector("#pdm-hud-mini").onclick = () => {
+      card.style.display = "none";
+      badge.style.display = "flex";
+    };
+
+    // Pause / Resume Toggle
+    let isPaused = false;
+    const pauseBtn = card.querySelector("#pdm-btn-pause-resume");
+    const pauseLbl = card.querySelector("#pdm-lbl-pause");
+    pauseBtn.onclick = () => {
+      if (!isPaused) {
+        chrome.runtime.sendMessage({ action: "pause_task", task_id: taskId });
+        isPaused = true;
+        pauseLbl.innerText = "▶️ Resume";
+        const st = card.querySelector("#pdm-hud-status");
+        if (st) {
+          st.className = "pdm-card-status-pill pdm-status-paused";
+          st.innerText = "Paused";
+        }
+      } else {
+        chrome.runtime.sendMessage({ action: "resume_task", task_id: taskId });
+        isPaused = false;
+        pauseLbl.innerText = "⏸️ Pause";
+        const st = card.querySelector("#pdm-hud-status");
+        if (st) {
+          st.className = "pdm-card-status-pill pdm-status-downloading";
+          st.innerText = "Downloading ⚡";
         }
       }
-    }
-    if (!title) {
-      title = (document.title || "").trim();
-    }
-    const lower = title.toLowerCase();
-    const genericWords = ["facebook", "youtube", "instagram", "video", "reel", "watch", "tiktok", "twitter"];
-    if (!title || genericWords.some((w) => lower === w || lower.startsWith(`${w} -`) || lower.startsWith(`${w} :`))) {
-      const now = new Date();
-      const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}`;
-      const prefix = document.title ? document.title.split("-")[0].trim() : "Video";
-      title = `${prefix}_${dateStr}`;
-    }
-    return title.replace(/[<>:"/\\|?*\n\r\t]/g, "_").trim().substring(0, 100) || "Video";
-  }
+    };
 
-  function formatBytes(bytes) {
-    if (!bytes || bytes <= 0) return "";
-    const units = ["B", "KB", "MB", "GB"];
-    let i = 0;
-    while (bytes >= 1024 && i < units.length - 1) {
-      bytes /= 1024;
-      i++;
-    }
-    return `${bytes.toFixed(1)} ${units[i]}`;
-  }
+    // Cancel Button
+    card.querySelector("#pdm-btn-cancel").onclick = () => {
+      chrome.runtime.sendMessage({ action: "cancel_task", task_id: taskId });
+      if (activeProgressInterval) clearInterval(activeProgressInterval);
+      activeProgressInterval = null;
+      card.style.display = "none";
+      badge.style.display = "none";
+    };
 
-  function escapeHtml(str) {
-    return String(str)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#39;");
-  }
+    // Start 500ms polling loop
+    if (activeProgressInterval) clearInterval(activeProgressInterval);
+    activeProgressInterval = setInterval(() => {
+      chrome.runtime.sendMessage({ action: "get_task_progress", task_id: taskId }, (res) => {
+        if (!res || res.status !== "ok" || !res.task) return;
+        const t = res.task;
 
-  // 7. Intercept clicks on download links & buttons (IDM-style link interception)
-  const DOWNLOAD_EXTENSIONS = new Set([
-    "zip", "rar", "7z", "tar", "gz", "bz2", "xz", "iso", "img", "bin",
-    "exe", "msi", "dmg", "pkg", "deb", "rpm", "apk",
-    "mp4", "mkv", "avi", "mov", "flv", "webm", "wmv", "m4v",
-    "mp3", "wav", "flac", "aac", "ogg", "m4a", "wma",
-    "pdf", "epub", "mobi", "docx", "xlsx", "pptx"
-  ]);
+        // Update Progress Bar
+        const bar = document.getElementById("pdm-hud-bar");
+        if (bar) bar.style.width = `${t.progress}%`;
 
-  function getUrlExtension(urlString) {
-    try {
-      const url = new URL(urlString, window.location.href);
-      if (!["http:", "https:"].includes(url.protocol)) return null;
-      const pathname = url.pathname.split("/").pop() || "";
-      const dotIndex = pathname.lastIndexOf(".");
-      if (dotIndex === -1) return null;
-      return pathname.substring(dotIndex + 1).toLowerCase();
-    } catch (e) {
-      return null;
-    }
-  }
+        // Update Stats
+        const pctEl = document.getElementById("pdm-hud-pct");
+        if (pctEl) pctEl.innerText = `${t.progress}%`;
 
-  document.addEventListener(
-    "click",
-    (e) => {
-      // Hold Alt or Ctrl to bypass PDM interception (standard IDM bypass shortcut)
-      if (e.altKey || e.ctrlKey || e.button !== 0) return;
+        const spdEl = document.getElementById("pdm-hud-spd");
+        if (spdEl) spdEl.innerText = `⚡ ${t.speed_formatted}`;
 
-      const link = e.target.closest("a, button, [role='button']");
-      if (!link) return;
-
-      let url = link.href || link.getAttribute("data-url") || link.getAttribute("data-href");
-      if (!url && link.tagName === "BUTTON") {
-        const onclickAttr = link.getAttribute("onclick") || "";
-        const m = onclickAttr.match(/https?:\/\/[^\s'"\)]+/);
-        if (m) url = m[0];
-      }
-      if (!url || (!url.startsWith("http://") && !url.startsWith("https://"))) return;
-
-      const ext = getUrlExtension(url);
-      const hasDownloadAttr = link.hasAttribute && link.hasAttribute("download");
-      const isKnownExt = ext && DOWNLOAD_EXTENSIONS.has(ext);
-      const text = (link.innerText || "").trim().toLowerCase();
-      const isDownloadText = text === "download" || text.includes("download") || (link.title && link.title.toLowerCase().includes("download"));
-      const classText = (link.className && typeof link.className === "string") ? link.className.toLowerCase() : "";
-      const isDownloadClass = classText.includes("download") || classText.includes("btn-download");
-
-      if (isKnownExt || hasDownloadAttr || isDownloadText || isDownloadClass) {
-        e.preventDefault();
-        e.stopPropagation();
-
-        let title = "";
-        const row = link.closest("tr, li, [class*='row'], [class*='item'], [class*='episode'], [class*='card']");
-        if (row) {
-          const candidateEls = row.querySelectorAll("td, th, span, div, strong, b, h1, h2, h3, h4, h5, h6, p");
-          for (const cel of candidateEls) {
-            if (cel !== link && !cel.contains(link) && !link.contains(cel)) {
-              const txt = cel.innerText.trim();
-              if (txt && !txt.toLowerCase().includes("download") && txt.length > 2) {
-                title = txt;
-                break;
-              }
-            }
-          }
-          if (!title) {
-            title = row.innerText.replace(/download/gi, "").trim();
-          }
-        }
-        if (!title || title.toLowerCase() === "download") {
-          title = (link.getAttribute && link.getAttribute("download")) || link.title || link.innerText.trim() || url.split("/").pop() || "download";
-        }
-        title = title.split("\n")[0].trim().replace(/[<>:"/\\|?*]/g, "_").substring(0, 100);
-        if (title && !title.match(/\.[a-zA-Z0-9]{2,5}$/)) {
-          if (ext) {
-            title = `${title}.${ext}`;
-          } else if (/(s\d+|e\d+|episode|season|king|movie|video|1080p|720p|480p)/i.test(title)) {
-            title = `${title}.mp4`;
-          }
+        const bytesEl = document.getElementById("pdm-hud-bytes");
+        if (bytesEl) {
+          const dlStr = formatBytes(t.downloaded);
+          const totStr = t.total > 0 ? formatBytes(t.total) : "...";
+          bytesEl.innerText = `${dlStr} / ${totStr}`;
         }
 
-        chrome.runtime.sendMessage(
-          {
-            action: "download_via_native",
-            url: url,
-            filename: title,
-            auto_start: true,
-            referer: window.location.href,
-            origin: window.location.origin,
-            user_agent: navigator.userAgent
-          },
-          () => {
-            showToast("⚡ Sent download to Personal Download Manager!");
-          }
-        );
-      }
-    },
-    true
-  );
+        const etaEl = document.getElementById("pdm-hud-eta");
+        if (etaEl) etaEl.innerText = t.eta_formatted ? `⏱️ ${t.eta_formatted}` : "";
+
+        // Update Mini Badge
+        const miniPct = document.getElementById("pdm-mini-pct");
+        if (miniPct) miniPct.innerText = `${t.progress}%`;
+
+        const miniSpd = document.getElementById("pdm-mini-spd");
+        if (miniSpd) miniSpd.innerText = t.speed_formatted;
+
+        // Check if finished
+        if (t.status === "completed" || t.progress >= 100) {
+          clearInterval(activeProgressInterval);
+          activeProgressInterval = null;
+          renderCompletedHUD(t);
+        }
+      });
+    }, 500);
+  }
+
+  function renderCompletedHUD(task) {
+    const card = getActiveCard();
+    const badge = getMiniBadge();
+    badge.style.display = "none";
+    card.style.display = "block";
+
+    card.innerHTML = `
+      <div class="pdm-card-header">
+        <div class="pdm-card-brand">
+          <div class="pdm-card-logo">P</div>
+          <span class="pdm-card-title">Personal Download Manager</span>
+        </div>
+        <span class="pdm-card-status-pill pdm-status-completed">Completed ✓</span>
+        <div class="pdm-card-controls">
+          <button class="pdm-icon-btn" id="pdm-card-close" title="Close">✕</button>
+        </div>
+      </div>
+      <div class="pdm-card-body">
+        <div class="pdm-file-box">
+          <div class="pdm-filename" title="${escapeHtml(task.filename)}">${escapeHtml(task.filename)}</div>
+          <div style="font-size:11.5px;color:#34d399;font-weight:600;margin-top:4px;">
+            ✓ Download Complete (${formatBytes(task.total || task.downloaded)})
+          </div>
+        </div>
+        <div class="pdm-action-row">
+          <button class="pdm-btn-primary" id="pdm-btn-open-file">
+            <span>📂 Open File</span>
+          </button>
+          <button class="pdm-btn-secondary" id="pdm-btn-open-folder">
+            <span>📁 Open Folder</span>
+          </button>
+        </div>
+      </div>
+    `;
+
+    card.querySelector("#pdm-card-close").onclick = () => { card.style.display = "none"; };
+
+    card.querySelector("#pdm-btn-open-file").onclick = () => {
+      chrome.runtime.sendMessage({ action: "open_file", task_id: task.id });
+    };
+
+    card.querySelector("#pdm-btn-open-folder").onclick = () => {
+      chrome.runtime.sendMessage({ action: "open_folder", task_id: task.id });
+    };
+  }
+
+  function showCardError(errMsg) {
+    const card = getActiveCard();
+    card.innerHTML = `
+      <div class="pdm-card-header">
+        <div class="pdm-card-brand">
+          <div class="pdm-card-logo">P</div>
+          <span class="pdm-card-title">Personal Download Manager</span>
+        </div>
+        <span class="pdm-card-status-pill pdm-btn-danger">Error</span>
+        <div class="pdm-card-controls">
+          <button class="pdm-icon-btn" id="pdm-card-close" title="Close">✕</button>
+        </div>
+      </div>
+      <div class="pdm-card-body">
+        <div style="color:#f87171;font-size:12.5px;margin-bottom:12px;">${escapeHtml(errMsg)}</div>
+        <button class="pdm-btn-secondary" id="pdm-card-err-close" style="width:100%;">Close</button>
+      </div>
+    `;
+    card.querySelector("#pdm-card-close").onclick = () => { card.style.display = "none"; };
+    card.querySelector("#pdm-card-err-close").onclick = () => { card.style.display = "none"; };
+  }
+
+  // Listen to background messages for active downloads triggered outside content script
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg.type === "PDM_ACTIVE_DOWNLOAD_STARTED" && msg.taskId) {
+      startActiveDownloadHUD(msg.taskId, msg.title || "File Download", 0);
+    }
+  });
+
 
   // 8. Batch Link Scanner & Grabber Dialog (IDM "Download all with IDM" feature)
   function scanPageDownloadLinks(onlySelection = false) {
@@ -1270,23 +1704,45 @@
     });
   } catch (e) {}
 
+  // Global event hooks to ensure floater follows video seamlessly
+  function repositionAllOverlays() {
+    repositionGlobalOverlay();
+  }
+
+  // Periodic ticker to detect dynamic SPA videos and keep floater aligned
+  setInterval(() => {
+    scanMediaElements();
+    repositionAllOverlays();
+  }, 600);
+
+  // Capture all container scrolls
+  document.addEventListener("scroll", repositionAllOverlays, { capture: true, passive: true });
+  window.addEventListener("resize", repositionAllOverlays, { passive: true });
+
+  // Playback & hover events
   document.addEventListener("play", (e) => {
     if (e.target && (e.target.tagName === "VIDEO" || e.target.tagName === "AUDIO")) {
-      attachOverlay(e.target);
+      scanMediaElements();
+      repositionAllOverlays();
     }
   }, true);
 
-  if (document.readyState === "complete") {
-    setTimeout(() => {
+  document.addEventListener("playing", (e) => {
+    if (e.target && (e.target.tagName === "VIDEO" || e.target.tagName === "AUDIO")) {
       scanMediaElements();
-      updateBatchPill();
-    }, 800);
-  } else {
-    window.addEventListener("load", () => {
-      setTimeout(() => {
-        scanMediaElements();
-        updateBatchPill();
-      }, 800);
-    });
-  }
+      repositionAllOverlays();
+    }
+  }, true);
+
+  document.addEventListener("mousemove", (e) => {
+    if (e.target && (e.target.tagName === "VIDEO" || (e.target.closest && e.target.closest("video, .pdm-video-overlay")))) {
+      repositionAllOverlays();
+    }
+  }, { passive: true });
+
+  // Immediate and staggered scans on script injection
+  scanMediaElements();
+  setTimeout(scanMediaElements, 300);
+  setTimeout(scanMediaElements, 800);
+  setTimeout(scanMediaElements, 2000);
 })();

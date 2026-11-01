@@ -9,3 +9,8 @@ __pycache__/
 *.log
 .venv/
 venv/
+payload.zip
+check_lnk.py
+debug_db.py
+test_installed_pdm.py
+*.png

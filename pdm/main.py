@@ -3,8 +3,15 @@
 import argparse
 import os
 import sys
+
+# Ensure repository root is on sys.path so direct script execution works
+_repo_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _repo_dir not in sys.path:
+    sys.path.insert(0, _repo_dir)
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
+from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication
 
 from pdm.core.coordinator import DownloadCoordinator
@@ -27,45 +34,20 @@ def main():
     parser.add_argument("-f", "--name", type=str, help="Custom filename")
     parser.add_argument("--tray", action="store_true", help="Start minimized to system tray")
     parser.add_argument("--portable", action="store_true", help="Store DB in current working directory")
+    parser.add_argument("--native-host", action="store_true", help="Run as browser native messaging host")
     args = parser.parse_args()
+
+    # Browser Native Messaging stdio mode
+    if args.native_host:
+        from pdm.browser_bridge.native_host import main as native_host_main
+        native_host_main()
+        sys.exit(0)
 
     # Determine DB location
     if args.portable:
         db_path = os.path.abspath("downloads.db")
     else:
         db_path = os.path.join(get_default_data_dir(), "downloads.db")
-
-    # 0. Single-Instance Check via Windows Named Mutex
-    mutex = None
-    if sys.platform == "win32":
-        try:
-            import ctypes
-            MUTEX_NAME = "Local\\PersonalDownloadManager_SingleInstance_Mutex"
-            ERROR_ALREADY_EXISTS = 183
-            mutex = ctypes.windll.kernel32.CreateMutexW(None, False, MUTEX_NAME)
-            if ctypes.windll.kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
-                # If command-line download URL was provided, route to existing instance via DB
-                if args.url:
-                    from pdm.storage.db import DatabaseManager
-                    temp_db = DatabaseManager(db_path)
-                    default_dir = args.path or temp_db.get_setting(
-                        "default_dir", os.path.join(os.path.expanduser("~"), "Downloads")
-                    )
-                    temp_db.add_incoming_request(
-                        url=args.url,
-                        filename=args.name or "",
-                        auto_start=True
-                    )
-
-                # Restore and focus existing PDM window
-                hwnd = ctypes.windll.user32.FindWindowW(None, "Personal Download Manager")
-                if hwnd:
-                    ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-                    ctypes.windll.user32.SetForegroundWindow(hwnd)
-
-                sys.exit(0)
-        except Exception:
-            pass
 
     # Qt Application Setup with High DPI support
     QApplication.setHighDpiScaleFactorRoundingPolicy(
@@ -87,6 +69,36 @@ def main():
     app.setApplicationName("Personal Download Manager")
     app.setOrganizationName("PersonalDownloadManager")
 
+    # 0. Single-Instance Check via Qt Local IPC Socket
+    SOCKET_NAME = "PersonalDownloadManager_SingleInstance_IPC"
+    ipc_socket = QLocalSocket()
+    ipc_socket.connectToServer(SOCKET_NAME)
+    connected = ipc_socket.waitForConnected(400)
+    if connected:
+        # Existing instance is running!
+        # If launched by user without --tray, request the running instance to show its window
+        cmd = "TRAY" if args.tray else "SHOW"
+        payload = f"{cmd}|{args.url or ''}|{args.path or ''}|{args.name or ''}"
+        ipc_socket.write(payload.encode("utf-8"))
+        ipc_socket.waitForBytesWritten(1000)
+        ipc_socket.disconnectFromServer()
+        sys.exit(0)
+
+    # Primary instance: Remove any stale socket file and listen
+    QLocalServer.removeServer(SOCKET_NAME)
+    ipc_server = QLocalServer()
+    listened = ipc_server.listen(SOCKET_NAME)
+
+    # Maintain Windows Kernel Mutex for non-Qt callers
+    mutex = None
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            MUTEX_NAME = "Local\\PersonalDownloadManager_SingleInstance_Mutex"
+            mutex = ctypes.windll.kernel32.CreateMutexW(None, False, MUTEX_NAME)
+        except Exception:
+            pass
+
     # Set Application Icon
     base_dir = os.path.dirname(os.path.abspath(__file__))
     icon_candidates = [
@@ -107,6 +119,10 @@ def main():
 
     # Storage & Coordinator
     db = DatabaseManager(db_path)
+    theme = db.get_setting("theme", "dark")
+    from pdm.gui.theme import DARK_THEME_QSS, LIGHT_THEME_QSS
+    app.setStyleSheet(LIGHT_THEME_QSS if theme == "light" else DARK_THEME_QSS)
+
     max_conns = int(db.get_setting("max_concurrent", "3"))
     speed_limit = int(db.get_setting("global_speed_limit", "0"))
 
@@ -118,6 +134,55 @@ def main():
 
     # Main Window
     window = MainWindow(coordinator)
+
+    # Handle incoming IPC messages from future instances
+    def on_ipc_connection():
+        client = ipc_server.nextPendingConnection()
+        if not client:
+            return
+        if client.bytesAvailable() == 0:
+            client.waitForReadyRead(1000)
+        data = client.readAll().data().decode("utf-8", errors="ignore").strip()
+        parts = data.split("|")
+        cmd = parts[0] if parts else "SHOW"
+
+        if cmd in ("SHOW", "ACTIVATE") or cmd.startswith("URL:"):
+            window._show_window()
+
+            cli_url = None
+            cli_dir = None
+            cli_fn = None
+
+            if cmd.startswith("URL:"):
+                cli_url = cmd[4:]
+                if len(parts) > 1 and parts[1]:
+                    cli_dir = parts[1]
+                if len(parts) > 2 and parts[2]:
+                    cli_fn = parts[2]
+            elif len(parts) > 1 and parts[1]:
+                cli_url = parts[1]
+                cli_dir = parts[2] if len(parts) > 2 and parts[2] else None
+                cli_fn = parts[3] if len(parts) > 3 and parts[3] else None
+
+            if cli_url:
+                target_dir = cli_dir or db.get_setting(
+                    "default_dir", os.path.join(os.path.expanduser("~"), "Downloads")
+                )
+                try:
+                    coordinator.add_download(
+                        url=cli_url,
+                        destination_dir=target_dir,
+                        filename=cli_fn or "",
+                        auto_start=True
+                    )
+                except Exception as e:
+                    print(f"Error adding download from IPC: {e}", file=sys.stderr)
+        elif cmd == "PUMP":
+            coordinator._pump_queue()
+            window.table_model.refresh()
+        client.disconnectFromServer()
+
+    ipc_server.newConnection.connect(on_ipc_connection)
 
     # Handle command-line download request
     if args.url:
@@ -138,6 +203,8 @@ def main():
         window.show()
 
     exit_code = app.exec()
+    ipc_server.close()
+    QLocalServer.removeServer(SOCKET_NAME)
     if window.tray_icon:
         window.tray_icon.hide()
     coordinator.shutdown()

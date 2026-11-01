@@ -119,7 +119,7 @@ class DownloadCoordinator:
         return task_id
 
     def start_download(self, task_id: int):
-        """Mark task as Queued so queue pump can start it."""
+        """Mark task as Queued so queue pump can start it immediately."""
         with self._lock:
             if task_id in self._active_tasks:
                 return  # Already running
@@ -129,6 +129,11 @@ class DownloadCoordinator:
                 return
 
             self.db.set_download_status(task_id, DownloadStatus.QUEUED.value)
+        self._pump_queue()
+
+    def resume_download(self, task_id: int):
+        """Alias for start_download."""
+        self.start_download(task_id)
 
     def pause_download(self, task_id: int):
         """Pause a currently downloading task."""
