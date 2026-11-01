@@ -42,7 +42,7 @@
 
   window.addEventListener("message", (e) => {
     if (e.data && (e.data.type === "PDM_MEDIA_PLAY" || e.data.type === "PDM_MEDIA_LOAD")) {
-      requestAnimationFrame(() => scanVideos());
+      requestAnimationFrame(() => scanMediaElements());
     }
   });
 
@@ -389,6 +389,59 @@
   }
 
   // 5. Detect and populate standard resolution streams on video portals (YouTube, Reddit, etc.)
+  
+  // Core Text & Data Formatting Helpers
+  function escapeHtml(str) {
+    return String(str || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function formatBytes(bytes) {
+    if (!bytes || bytes <= 0) return "0 B";
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    let i = 0;
+    let b = Number(bytes);
+    while (b >= 1024 && i < units.length - 1) {
+      b /= 1024;
+      i++;
+    }
+    return `${b.toFixed(1)} ${units[i]}`;
+  }
+
+  function getCleanTitle(videoEl = null) {
+    let title = "";
+    if (videoEl) {
+      const container = videoEl.closest && videoEl.closest('[role="article"], [data-pagelet], article, .post');
+      if (container) {
+        const textEl = container.querySelector('[data-ad-preview="message"], [data-testid="post_message"], h1, h2, h3, p');
+        if (textEl && textEl.innerText && textEl.innerText.trim().length > 3) {
+          title = textEl.innerText.trim().split("\n")[0];
+        }
+      }
+    }
+    if (!title) {
+      title = (document.title || "").trim();
+    }
+    // VnA-Style social media statistics cleaner (strip views, reactions, comments, likes, watching, subscribers)
+    title = title.replace(/[\d.]+[KMB]?\s*(views|reactions|comments|shares|likes|watching|subscribers)/gi, "");
+    title = title.replace(/[•|·]/g, " ").replace(/\s+/g, " ").trim();
+
+    const lower = title.toLowerCase();
+    const genericWords = ["facebook", "youtube", "instagram", "video", "reel", "watch", "tiktok", "twitter"];
+    if (!title || genericWords.some((w) => lower === w || lower.startsWith(`${w} -`) || lower.startsWith(`${w} :`))) {
+      const now = new Date();
+      const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}`;
+      const prefix = document.title ? document.title.split("-")[0].trim() : "Video";
+      title = `${prefix}_${dateStr}`;
+    }
+    return title.replace(/[<>:"/\\|?*\n\r\t]/g, "_").trim().substring(0, 100) || "Video";
+  }
+
+
   function ensurePortalResolutionStreams() {
     if (!isPopularMediaPortal(window.location.href)) return;
 
@@ -611,11 +664,13 @@
       window.addEventListener("mouseup", onMouseUp, true);
     }
 
-    dragHandle.addEventListener("mousedown", initDrag);
-    floaterBar.addEventListener("mousedown", (e) => {
-      if (e.target.closest(".pdm-grab-button") || e.target.closest(".pdm-grab-close")) return;
-      initDrag(e);
-    });
+    if (dragHandle) dragHandle.addEventListener("mousedown", initDrag);
+    if (floaterBar) {
+      floaterBar.addEventListener("mousedown", (e) => {
+        if (e.target && e.target.closest && (e.target.closest(".pdm-grab-button") || e.target.closest(".pdm-grab-close"))) return;
+        initDrag(e);
+      });
+    }
 
     // Dismiss / Close button (✕)
     grabClose.addEventListener("click", (e) => {
