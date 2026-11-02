@@ -406,6 +406,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           url: message.url,
           filename: message.filename || "",
           auto_start: message.auto_start !== false,
+          force_redownload: message.force_redownload === true,
           cookies: cookies,
           referer: referer,
           user_agent: userAgent,
@@ -415,7 +416,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         (response) => {
           if (chrome.runtime.lastError) {
             console.warn("PDM Host Communication Error:", chrome.runtime.lastError.message);
-            // VnA-style clipboard fallback if native messaging fails
             try {
               if (sender.tab && sender.tab.id) {
                 chrome.scripting.executeScript({
@@ -426,6 +426,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               }
             } catch (err) {}
             sendResponse({ status: "error", error: chrome.runtime.lastError.message, copiedToClipboard: true });
+          } else if (response && response.status === "duplicate") {
+            sendResponse({ status: "duplicate", existing_task: response.existing_task });
           } else {
             sendResponse({ status: "ok", data: response });
           }

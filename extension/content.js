@@ -1169,6 +1169,99 @@
     return { style: {} };
   }
 
+  
+  // IDM-Style Duplicate Download Notice Card
+  function showDuplicateNoticeCard(existing, opts) {
+    const card = getActiveCard();
+    card.style.display = "block";
+
+    const filename = existing.filename || opts.filename || "file";
+    const filepath = existing.filepath || "";
+    const sizeStr = existing.total_bytes > 0 ? ` (${formatBytes(existing.total_bytes)})` : "";
+
+    card.innerHTML = `
+      <div class="pdm-card-header" title="Drag to move anywhere">
+        <div class="pdm-card-brand">
+          <div class="pdm-card-logo">P</div>
+          <span class="pdm-card-title">Personal Download Manager</span>
+        </div>
+        <span class="pdm-card-status-pill pdm-status-paused" style="background:rgba(234,179,8,0.18);color:#fbbf24;border:1px solid rgba(234,179,8,0.35);">
+          Already Downloaded ℹ️
+        </span>
+        <div class="pdm-card-controls">
+          <button class="pdm-icon-btn" id="pdm-card-close" title="Close">✕</button>
+        </div>
+      </div>
+      <div class="pdm-card-body">
+        <div class="pdm-file-box">
+          <div class="pdm-filename" title="${escapeHtml(filename)}">${escapeHtml(filename)}${escapeHtml(sizeStr)}</div>
+          <div style="font-size:11.5px;color:#cbd5e1;margin-top:6px;line-height:1.45;">
+            এই ফাইলটি ইতিমধ্যে ডাউনলোড করা হয়েছে। আপনি কি ফাইলটি ওপেন করবেন নাকি আবার ডাউনলোড করতে চান?
+          </div>
+          ${filepath ? `<div style="font-size:10.5px;color:#94a3b8;margin-top:5px;word-break:break-all;">📂 ${escapeHtml(filepath)}</div>` : ''}
+        </div>
+        <div class="pdm-action-row" style="flex-direction:column;gap:8px;">
+          <button class="pdm-btn-primary" id="pdm-dup-open" style="width:100%;">
+            <span>📂 Open Existing File</span>
+          </button>
+          <div style="display:flex;gap:8px;width:100%;">
+            <button class="pdm-btn-secondary" id="pdm-dup-redownload" style="flex:1;">
+              <span>⚡ Download Again</span>
+            </button>
+            <button class="pdm-btn-secondary" id="pdm-dup-cancel" style="flex:1;">
+              <span>Cancel</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+
+    // 1. Open Existing File
+    const openBtn = card.querySelector("#pdm-dup-open");
+    if (openBtn) {
+      openBtn.onclick = () => {
+        chrome.runtime.sendMessage({
+          action: "open_file",
+          task_id: existing.id || 0,
+          filepath: filepath
+        });
+        card.style.display = "none";
+      };
+    }
+
+    // 2. Download Again (Force Re-download)
+    const reDlBtn = card.querySelector("#pdm-dup-redownload");
+    if (reDlBtn) {
+      reDlBtn.onclick = () => {
+        reDlBtn.innerHTML = "<span>Connecting...</span>";
+        chrome.runtime.sendMessage({
+          action: "download_via_native",
+          url: opts.url,
+          filename: opts.filename,
+          auto_start: true,
+          force_redownload: true,
+          referer: opts.referer || window.location.href,
+          origin: opts.origin || window.location.origin,
+          user_agent: opts.user_agent || navigator.userAgent,
+          cookies: opts.cookies || ""
+        }, (resp) => {
+          if (resp && resp.status === "ok" && resp.data && resp.data.task_ids && resp.data.task_ids.length > 0) {
+            startActiveDownloadHUD(resp.data.task_ids[0], opts.filename, opts.size || 0);
+          } else {
+            showCardError((resp && resp.error) || "Host connection failed.");
+          }
+        });
+      };
+    }
+
+    // 3. Close & Cancel
+    const closeBtn = card.querySelector("#pdm-card-close");
+    if (closeBtn) closeBtn.onclick = () => { card.style.display = "none"; };
+
+    const cancelBtn = card.querySelector("#pdm-dup-cancel");
+    if (cancelBtn) cancelBtn.onclick = () => { card.style.display = "none"; };
+  }
+
   function showPreDownloadCard(opts) {
     const card = getActiveCard();
     // Default initial position: Centered on screen, draggable anywhere
@@ -1222,26 +1315,33 @@
       card.style.display = "none";
     };
 
-    // Download Now Handler
-    card.querySelector("#pdm-action-download-now").onclick = () => {
-      card.querySelector("#pdm-action-download-now").innerHTML = "<span>Connecting...</span>";
+    // Download Now Handler with IDM-style Duplicate Protection
+    function initiateDownload(forceRedownload = false) {
+      const nowBtn = card.querySelector("#pdm-action-download-now");
+      if (nowBtn) nowBtn.innerHTML = "<span>Connecting...</span>";
       chrome.runtime.sendMessage({
         action: "download_via_native",
         url: opts.url,
         filename: filename,
         auto_start: true,
+        force_redownload: forceRedownload,
         referer: opts.referer || window.location.href,
         origin: opts.origin || window.location.origin,
         user_agent: opts.user_agent || navigator.userAgent,
         cookies: opts.cookies || ""
       }, (resp) => {
-        if (resp && resp.status === "ok" && resp.data && resp.data.task_ids && resp.data.task_ids.length > 0) {
+        if (resp && resp.status === "duplicate" && resp.existing_task) {
+          showDuplicateNoticeCard(resp.existing_task, opts);
+        } else if (resp && resp.status === "ok" && resp.data && resp.data.task_ids && resp.data.task_ids.length > 0) {
           startActiveDownloadHUD(resp.data.task_ids[0], filename, opts.size || 0);
         } else {
           showCardError((resp && resp.error) || "Host connection failed. Check if PDM is running.");
         }
       });
-    };
+    }
+
+    const nowBtn = card.querySelector("#pdm-action-download-now");
+    if (nowBtn) nowBtn.onclick = () => initiateDownload(false);
 
     // Download Later / Queue Handler
     card.querySelector("#pdm-action-download-later").onclick = () => {

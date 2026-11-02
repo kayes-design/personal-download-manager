@@ -144,6 +144,68 @@ def format_eta(seconds: int) -> str:
     return f"{seconds}s"
 
 
+def find_completed_download(db: DatabaseManager, default_dir: str, item: dict) -> Optional[dict]:
+    raw_url = item.get("url")
+    ok, valid_url = validate_url(raw_url)
+    if not ok:
+        return None
+
+    raw_filename = item.get("filename") or extract_filename_from_url(valid_url)
+    clean_filename = sanitize_filename(raw_filename)
+
+    with db._lock, db._get_connection() as conn:
+        # 1. Check if exact URL has been completed and exists on disk
+        cur = conn.execute(
+            "SELECT id, filename, destination_path, total_bytes FROM downloads WHERE url = ? AND status = 'Completed' ORDER BY id DESC LIMIT 1",
+            (valid_url,)
+        )
+        row = cur.fetchone()
+        if row and row[2] and os.path.exists(row[2]):
+            return {
+                "id": row[0],
+                "filename": row[1] or clean_filename,
+                "filepath": row[2],
+                "total_bytes": row[3] or 0
+            }
+
+        # 2. Check if clean_filename already exists in the target category directory
+        ext = os.path.splitext(clean_filename)[1].lower()
+        cat = item.get("category")
+        if not cat:
+            if ext in (".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".iso", ".7zip", ".cab", ".tgz", ".wim"):
+                cat = "Compressed"
+            elif ext in (".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt", ".epub", ".csv", ".rtf"):
+                cat = "Documents"
+            elif ext in (".mp3", ".wav", ".flac", ".aac", ".ogg", ".m4a", ".opus", ".wma", ".mka"):
+                cat = "Music"
+            elif ext in (".exe", ".msi", ".dmg", ".pkg", ".deb", ".rpm", ".apk", ".bat", ".cmd", ".appimage"):
+                cat = "Programs"
+            elif ext in (".mp4", ".mkv", ".avi", ".mov", ".flv", ".webm", ".wmv", ".ts", ".m4v", ".3gp", ".m3u8", ".mpd"):
+                cat = "Video"
+            else:
+                cat = "Other"
+
+        cat_key = f"save_dir_{cat.lower()}"
+        default_cat_dir = os.path.join(default_dir, cat) if cat != "Other" else default_dir
+        target_dir = db.get_setting(cat_key, default_cat_dir)
+        candidate_path = os.path.join(target_dir, clean_filename)
+
+        if os.path.exists(candidate_path) and os.path.getsize(candidate_path) > 0:
+            cur = conn.execute(
+                "SELECT id, filename, destination_path, total_bytes FROM downloads WHERE destination_path = ? AND status = 'Completed' ORDER BY id DESC LIMIT 1",
+                (candidate_path,)
+            )
+            r2 = cur.fetchone()
+            return {
+                "id": r2[0] if r2 else 0,
+                "filename": clean_filename,
+                "filepath": candidate_path,
+                "total_bytes": (r2[3] if r2 else os.path.getsize(candidate_path)) or 0
+            }
+
+    return None
+
+
 def handle_download_item(db: DatabaseManager, default_dir: str, default_conns: int, item: dict) -> Optional[int]:
     raw_url = item.get("url")
     ok, valid_url = validate_url(raw_url)
@@ -283,6 +345,17 @@ def main():
                 default_conns = int(db.get_setting("default_connections", "4"))
 
                 items = msg.get("items") or [msg]
+
+                # Check duplicate if single download and not force_redownload
+                if len(items) == 1 and not items[0].get("force_redownload"):
+                    dup = find_completed_download(db, default_dir, items[0])
+                    if dup:
+                        send_message({
+                            "status": "duplicate",
+                            "existing_task": dup
+                        })
+                        continue
+
                 created_ids = []
 
                 for item in items:
@@ -321,11 +394,18 @@ def main():
 
             elif action == "open_file":
                 task_id = int(msg.get("task_id", 0))
-                with db._lock, db._get_connection() as conn:
-                    cur = conn.execute("SELECT destination_path FROM downloads WHERE id = ?", (task_id,))
-                    row = cur.fetchone()
-                if row and row[0] and os.path.exists(row[0]):
-                    os.startfile(row[0])
+                filepath = msg.get("filepath", "")
+                target = None
+                if filepath and os.path.exists(filepath):
+                    target = filepath
+                elif task_id > 0:
+                    with db._lock, db._get_connection() as conn:
+                        cur = conn.execute("SELECT destination_path FROM downloads WHERE id = ?", (task_id,))
+                        row = cur.fetchone()
+                    if row and row[0] and os.path.exists(row[0]):
+                        target = row[0]
+                if target:
+                    os.startfile(target)
                     send_message({"status": "ok"})
                 else:
                     send_message({"status": "error", "error": "File not found"})

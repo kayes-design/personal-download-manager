@@ -1073,6 +1073,32 @@ class MainWindow(QMainWindow):
                 return
 
             url, save_dir, filename, category, conns, auto_start = dialog.get_data()
+
+            # IDM-style duplicate check
+            with self.db._lock, self.db._get_connection() as conn:
+                cur = conn.execute(
+                    "SELECT id, filename, destination_path FROM downloads WHERE url = ? AND status = 'Completed' ORDER BY id DESC LIMIT 1",
+                    (url,)
+                )
+                dup_row = cur.fetchone()
+
+            if dup_row and dup_row[2] and os.path.exists(dup_row[2]):
+                msg_box = QMessageBox(self)
+                msg_box.setWindowTitle("File Already Downloaded")
+                msg_box.setText(f"This file has already been downloaded with PDM:\n\n{dup_row[2]}\n\nWould you like to open it or download it again?")
+                open_btn = msg_box.addButton("Open File", QMessageBox.ButtonRole.ActionRole)
+                redl_btn = msg_box.addButton("Download Again", QMessageBox.ButtonRole.AcceptRole)
+                cancel_btn = msg_box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+                msg_box.setDefaultButton(open_btn)
+                msg_box.exec()
+
+                clicked = msg_box.clickedButton()
+                if clicked == open_btn:
+                    os.startfile(dup_row[2])
+                    return
+                elif clicked == cancel_btn:
+                    return
+
             try:
                 task_id = self.coordinator.add_download(
                     url=url,
