@@ -184,6 +184,33 @@
       handleNavigation();
     } else if (message.action === "OPEN_BATCH_MODAL") {
       openBatchModal(message.onlySelection);
+    } else if (message.action === "SHOW_CONFIRM_CARD" && message.url) {
+      let fn = "";
+      try {
+        const u = new URL(message.url);
+        fn = decodeURIComponent(u.pathname.split("/").pop() || "");
+      } catch (e) {
+        fn = message.url.split("/").pop() || "";
+      }
+      fn = fn.split("?")[0].split("#")[0].trim();
+      if (!fn || fn.length === 0) {
+        fn = (message.selectionText && message.selectionText.trim().substring(0, 50)) || "Download_File";
+      }
+      const ext = getUrlExtension(message.url);
+      if (ext && !fn.toLowerCase().endsWith(`.${ext}`)) {
+        fn = `${fn}.${ext}`;
+      } else if (!fn.includes(".")) {
+        fn = `${fn}.bin`;
+      }
+      showPreDownloadCard({
+        url: message.url,
+        filename: fn,
+        resolution: ext ? ext.toUpperCase() : "Link",
+        size: 0,
+        referer: window.location.href,
+        origin: window.location.origin,
+        user_agent: navigator.userAgent
+      });
     }
   });
 
@@ -1006,6 +1033,28 @@
       }
     }
 
+    if (targets.length === 1) {
+      const target = targets[0];
+      const baseTitle = getCleanTitle(currentMediaEl || document.querySelector("video"));
+      let ext = ".mp4";
+      if (target.resTag === "SUB" || target.isSubtitle) ext = ".srt";
+      else if (target.type && target.type.includes("audio")) ext = ".m4a";
+      const filename = baseTitle.toLowerCase().endsWith(ext) ? baseTitle : `${baseTitle}${ext}`;
+      const menu = overlay ? overlay.querySelector(".pdm-stream-menu") : null;
+      if (menu) menu.classList.remove("pdm-show");
+      showPreDownloadCard({
+        url: target.url,
+        filename: filename,
+        resolution: target.resTag || target.resolution || "HD Video",
+        size: target.size || 0,
+        referer: target.referer || window.location.href,
+        origin: target.origin || window.location.origin,
+        user_agent: target.userAgent || navigator.userAgent,
+        cookies: target.cookies || ""
+      });
+      return;
+    }
+
     const baseTitle = getCleanTitle(currentMediaEl || document.querySelector("video"));
     const items = targets.map((target, idx) => {
       let ext = ".mp4";
@@ -1277,7 +1326,7 @@
       activeProgressInterval = null;
     }
 
-    const filename = opts.filename || "Video_Download.mp4";
+    const initialFilename = opts.filename || "Video_Download.mp4";
     const sizeStr = opts.size && opts.size > 0 ? formatBytes(opts.size) : "Ready";
     const resTag = opts.resolution || "HD Video";
 
@@ -1294,8 +1343,9 @@
       </div>
       <div class="pdm-card-body">
         <div class="pdm-file-box">
-          <div class="pdm-filename" title="${escapeHtml(filename)}">${escapeHtml(filename)}</div>
-          <div class="pdm-file-meta">
+          <label style="display:block;font-size:11px;color:#94a3b8;margin-bottom:5px;font-weight:500;">File Name:</label>
+          <input type="text" id="pdm-confirm-filename" class="pdm-filename-input" value="${escapeHtml(initialFilename)}" spellcheck="false" />
+          <div class="pdm-file-meta" style="margin-top:8px;">
             <span class="pdm-meta-tag pdm-meta-res">${escapeHtml(resTag)}</span>
             <span class="pdm-meta-tag">${escapeHtml(sizeStr)}</span>
           </div>
@@ -1317,12 +1367,14 @@
 
     // Download Now Handler with IDM-style Duplicate Protection
     function initiateDownload(forceRedownload = false) {
+      const inputEl = card.querySelector("#pdm-confirm-filename");
+      const chosenFilename = (inputEl ? inputEl.value.trim() : "") || initialFilename;
       const nowBtn = card.querySelector("#pdm-action-download-now");
       if (nowBtn) nowBtn.innerHTML = "<span>Connecting...</span>";
       chrome.runtime.sendMessage({
         action: "download_via_native",
         url: opts.url,
-        filename: filename,
+        filename: chosenFilename,
         auto_start: true,
         force_redownload: forceRedownload,
         referer: opts.referer || window.location.href,
@@ -1331,9 +1383,9 @@
         cookies: opts.cookies || ""
       }, (resp) => {
         if (resp && resp.status === "duplicate" && resp.existing_task) {
-          showDuplicateNoticeCard(resp.existing_task, opts);
+          showDuplicateNoticeCard(resp.existing_task, Object.assign({}, opts, { filename: chosenFilename }));
         } else if (resp && resp.status === "ok" && resp.data && resp.data.task_ids && resp.data.task_ids.length > 0) {
-          startActiveDownloadHUD(resp.data.task_ids[0], filename, opts.size || 0);
+          startActiveDownloadHUD(resp.data.task_ids[0], chosenFilename, opts.size || 0);
         } else {
           showCardError((resp && resp.error) || "Host connection failed. Check if PDM is running.");
         }
@@ -1345,10 +1397,12 @@
 
     // Download Later / Queue Handler
     card.querySelector("#pdm-action-download-later").onclick = () => {
+      const inputEl = card.querySelector("#pdm-confirm-filename");
+      const chosenFilename = (inputEl ? inputEl.value.trim() : "") || initialFilename;
       chrome.runtime.sendMessage({
         action: "download_via_native",
         url: opts.url,
-        filename: filename,
+        filename: chosenFilename,
         auto_start: false,
         referer: opts.referer || window.location.href,
         origin: opts.origin || window.location.origin,
@@ -1356,7 +1410,7 @@
         cookies: opts.cookies || ""
       }, (resp) => {
         if (resp && resp.status === "ok") {
-          renderQueuedNotice(filename);
+          renderQueuedNotice(chosenFilename);
         } else {
           showCardError((resp && resp.error) || "Failed to add to queue.");
         }
@@ -1616,6 +1670,28 @@
   });
 
 
+  const KNOWN_DOWNLOAD_EXTENSIONS = new Set([
+    "zip", "rar", "7z", "tar", "gz", "bz2", "xz", "iso", "img", "bin",
+    "exe", "msi", "apk", "dmg", "pkg", "deb", "rpm",
+    "mp4", "mkv", "avi", "webm", "mov", "flv", "wmv", "m4v", "ts", "3gp",
+    "mp3", "flac", "wav", "aac", "ogg", "m4a", "opus", "wma",
+    "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "epub", "csv", "srt", "vtt", "torrent"
+  ]);
+
+  function getUrlExtension(str) {
+    if (!str) return null;
+    try {
+      const clean = str.split("?")[0].split("#")[0].trim();
+      const dot = clean.lastIndexOf(".");
+      if (dot === -1) return null;
+      const ext = clean.substring(dot + 1).toLowerCase();
+      if (ext.length >= 1 && ext.length <= 10 && !ext.includes("/")) {
+        return ext;
+      }
+    } catch (e) {}
+    return null;
+  }
+
   // 8. Batch Link Scanner & Grabber Dialog (IDM "Download all with IDM" feature)
   function scanPageDownloadLinks(onlySelection = false) {
     const links = [];
@@ -1625,6 +1701,22 @@
     if (onlySelection) {
       const selection = window.getSelection();
       if (selection && selection.rangeCount > 0) {
+        const selectedText = selection.toString();
+        const urlMatches = selectedText.match(/https?:\/\/[^\s'"<>)]+/g) || [];
+        for (const u of urlMatches) {
+          if (!seenUrls.has(u)) {
+            const ext = getUrlExtension(u);
+            const rawName = u.split("/").pop().split("?")[0].split("#")[0] || "File";
+            const fn = ext && !rawName.toLowerCase().endsWith(`.${ext}`) ? `${rawName}.${ext}` : rawName;
+            links.push({
+              url: u,
+              filename: fn,
+              label: rawName
+            });
+            seenUrls.add(u);
+          }
+        }
+
         const range = selection.getRangeAt(0);
         const container = range.commonAncestorContainer;
         const parent = container.nodeType === 1 ? container : container.parentElement;
@@ -1653,6 +1745,7 @@
       if (seenUrls.has(href)) continue;
 
       const ext = getUrlExtension(href);
+      const isKnownExt = ext ? KNOWN_DOWNLOAD_EXTENSIONS.has(ext) : false;
       const hasDownloadAttr = a.hasAttribute && a.hasAttribute("download");
       const text = (a.innerText || "").trim().toLowerCase();
       const isDownloadText = text === "download" || text.includes("download") || (a.title && a.title.toLowerCase().includes("download"));

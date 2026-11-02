@@ -429,7 +429,7 @@ class SettingsDialog(QDialog):
         # 1. General
         self.startup_cb.setChecked(is_startup_enabled())
         self.browser_integ_cb.setChecked(self.db.get_setting("browser_integration", "1") == "1")
-        self.clipboard_cb.setChecked(self.db.get_setting("clipboard_monitor", "1") == "1")
+        self.clipboard_cb.setChecked(self.db.get_setting("clipboard_monitor", "0") == "1")
 
         theme = self.db.get_setting("theme", "Dark")
         if "light" in theme.lower():

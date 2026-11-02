@@ -735,7 +735,8 @@ class MainWindow(QMainWindow):
         clipboard.dataChanged.connect(self._on_clipboard_data_changed)
 
     def _on_clipboard_data_changed(self):
-        enabled = self.db.get_setting("clipboard_monitor", "1") == "1"
+        # Default is 0 (disabled) to prevent intrusive popups on copying links
+        enabled = self.db.get_setting("clipboard_monitor", "0") == "1"
         if not enabled:
             return
 
@@ -759,9 +760,16 @@ class MainWindow(QMainWindow):
 
         if is_known_ext or is_media or is_cloud:
             self._last_clipboard_url = text
-            self.showNormal()
-            self.activateWindow()
-            self._open_add_dialog(prefill_url=valid_url)
+            # Non-intrusive: do not steal foreground focus
+            if self.isVisible() and self.isActiveWindow():
+                self._open_add_dialog(prefill_url=valid_url)
+            elif hasattr(self, "tray_icon") and self.tray_icon and self.tray_icon.isVisible():
+                self.tray_icon.showMessage(
+                    "Download Link Detected",
+                    f"Copied link: {fn or valid_url[:40]} - Click to download with PDM.",
+                    QSystemTrayIcon.Information,
+                    3500
+                )
 
     def _apply_theme(self):
         theme = self.db.get_setting("theme", "Dark")

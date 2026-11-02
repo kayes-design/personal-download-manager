@@ -26,7 +26,17 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId === "pdm-download-link") {
     const targetUrl = info.linkUrl || info.srcUrl;
     if (targetUrl) {
-      sendToPDM(targetUrl, "", true, tab ? tab.url : "", tab ? tab.id : null);
+      if (tab && tab.id) {
+        chrome.tabs.sendMessage(tab.id, {
+          action: "SHOW_CONFIRM_CARD",
+          url: targetUrl,
+          selectionText: info.selectionText || ""
+        }).catch(() => {
+          sendToPDM(targetUrl, "", true, tab ? tab.url : "", tab ? tab.id : null);
+        });
+      } else {
+        sendToPDM(targetUrl, "", true, "", null);
+      }
     }
   } else if (info.menuItemId === "pdm-download-all" || info.menuItemId === "pdm-download-selection") {
     if (tab && tab.id) {
