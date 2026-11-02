@@ -1084,9 +1084,72 @@
   // IN-PAGE ACTIVE DOWNLOAD CARD (FLOATING HUD) CONTROLLER & TWO-WAY SYNC
   // ==========================================================================
   let activeCardEl = null;
-  let miniBadgeEl = null;
   let activeProgressInterval = null;
   let currentActiveTaskId = null;
+
+  function initCardDragging(card) {
+    if (!card || card._dragInitialized) return;
+    card._dragInitialized = true;
+
+    let isDragging = false;
+    let startX = 0, startY = 0;
+    let startLeft = 0, startTop = 0;
+
+    card.addEventListener("mousedown", (e) => {
+      const header = e.target.closest && e.target.closest(".pdm-card-header");
+      if (!header) return;
+      if (e.target.closest("button") || e.target.closest("input") || e.target.closest(".pdm-icon-btn")) return;
+      if (e.button !== 0) return;
+
+      isDragging = true;
+      startX = e.clientX;
+      startY = e.clientY;
+
+      const rect = card.getBoundingClientRect();
+      startLeft = rect.left;
+      startTop = rect.top;
+
+      // Switch from transform-center to absolute pixel coordinates
+      card.style.transform = "none";
+      card.style.bottom = "auto";
+      card.style.right = "auto";
+      card.style.left = `${startLeft}px`;
+      card.style.top = `${startTop}px`;
+      card.classList.add("pdm-card-dragging");
+
+      if (document.body) document.body.style.userSelect = "none";
+
+      function onMouseMove(ev) {
+        if (!isDragging) return;
+        const dx = ev.clientX - startX;
+        const dy = ev.clientY - startY;
+
+        let newLeft = startLeft + dx;
+        let newTop = startTop + dy;
+
+        const pad = 8;
+        const maxL = (window.innerWidth || 1920) - rect.width - pad;
+        const maxT = (window.innerHeight || 1080) - rect.height - pad;
+        newLeft = Math.max(pad, Math.min(newLeft, maxL));
+        newTop = Math.max(pad, Math.min(newTop, maxT));
+
+        card.style.left = `${newLeft}px`;
+        card.style.top = `${newTop}px`;
+      }
+
+      function onMouseUp() {
+        if (!isDragging) return;
+        isDragging = false;
+        if (document.body) document.body.style.userSelect = "";
+        card.classList.remove("pdm-card-dragging");
+        window.removeEventListener("mousemove", onMouseMove, true);
+        window.removeEventListener("mouseup", onMouseUp, true);
+      }
+
+      window.addEventListener("mousemove", onMouseMove, true);
+      window.addEventListener("mouseup", onMouseUp, true);
+    });
+  }
 
   function getActiveCard() {
     if (!activeCardEl || !document.body.contains(activeCardEl)) {
@@ -1096,36 +1159,24 @@
         activeCardEl.id = "pdm-active-card";
         document.body.appendChild(activeCardEl);
       }
+      initCardDragging(activeCardEl);
     }
     return activeCardEl;
   }
 
   function getMiniBadge() {
-    if (!miniBadgeEl || !document.body.contains(miniBadgeEl)) {
-      miniBadgeEl = document.getElementById("pdm-mini-badge");
-      if (!miniBadgeEl) {
-        miniBadgeEl = document.createElement("div");
-        miniBadgeEl.id = "pdm-mini-badge";
-        miniBadgeEl.style.display = "none";
-        miniBadgeEl.innerHTML = `
-          <span style="font-size:14px;color:#38bdf8;">⚡</span>
-          <span class="pdm-mini-percent" id="pdm-mini-pct">0%</span>
-          <span class="pdm-mini-speed" id="pdm-mini-spd">0 KB/s</span>
-        `;
-        miniBadgeEl.addEventListener("click", () => {
-          miniBadgeEl.style.display = "none";
-          if (activeCardEl) activeCardEl.style.display = "block";
-        });
-        document.body.appendChild(miniBadgeEl);
-      }
-    }
-    return miniBadgeEl;
+    // Suppressed: User requested zero screen clutter when hidden
+    return { style: {} };
   }
 
   function showPreDownloadCard(opts) {
     const card = getActiveCard();
-    const badge = getMiniBadge();
-    badge.style.display = "none";
+    // Default initial position: Centered on screen, draggable anywhere
+    card.style.left = "50%";
+    card.style.top = "50%";
+    card.style.transform = "translate(-50%, -50%)";
+    card.style.bottom = "auto";
+    card.style.right = "auto";
     card.style.display = "block";
 
     if (activeProgressInterval) {
@@ -1138,7 +1189,7 @@
     const resTag = opts.resolution || "HD Video";
 
     card.innerHTML = `
-      <div class="pdm-card-header">
+      <div class="pdm-card-header" title="Drag to move anywhere">
         <div class="pdm-card-brand">
           <div class="pdm-card-logo">P</div>
           <span class="pdm-card-title">Personal Download Manager</span>
@@ -1216,7 +1267,7 @@
   function renderQueuedNotice(filename) {
     const card = getActiveCard();
     card.innerHTML = `
-      <div class="pdm-card-header">
+      <div class="pdm-card-header" title="Drag to move anywhere">
         <div class="pdm-card-brand">
           <div class="pdm-card-logo">P</div>
           <span class="pdm-card-title">Personal Download Manager</span>
@@ -1255,14 +1306,14 @@
     card.style.display = "block";
 
     card.innerHTML = `
-      <div class="pdm-card-header">
+      <div class="pdm-card-header" title="Drag to move anywhere">
         <div class="pdm-card-brand">
           <div class="pdm-card-logo">P</div>
           <span class="pdm-card-title">Personal Download Manager</span>
         </div>
         <span class="pdm-card-status-pill pdm-status-downloading" id="pdm-hud-status">Downloading ⚡</span>
         <div class="pdm-card-controls">
-          <button class="pdm-icon-btn" id="pdm-hud-mini" title="Minimize to Corner Badge">🗕</button>
+          <button class="pdm-icon-btn" id="pdm-hud-mini" title="Hide to PDM Desktop App (Runs in Background)">🗕</button>
           <button class="pdm-icon-btn" id="pdm-card-close" title="Close">✕</button>
         </div>
       </div>
@@ -1294,21 +1345,20 @@
       </div>
     `;
 
-    // Close button
-    card.querySelector("#pdm-card-close").onclick = () => {
+    // Clean Hide to Main Desktop App: Removes from browser screen without leaving any sticky bar
+    function hideToDesktopApp() {
       card.style.display = "none";
-      badge.style.display = "none";
       if (activeProgressInterval) {
         clearInterval(activeProgressInterval);
         activeProgressInterval = null;
       }
-    };
+    }
 
-    // Minimize button
-    card.querySelector("#pdm-hud-mini").onclick = () => {
-      card.style.display = "none";
-      badge.style.display = "flex";
-    };
+    const closeBtn = card.querySelector("#pdm-card-close");
+    if (closeBtn) closeBtn.onclick = hideToDesktopApp;
+
+    const miniBtn = card.querySelector("#pdm-hud-mini");
+    if (miniBtn) miniBtn.onclick = hideToDesktopApp;
 
     // Pause / Resume Toggle
     let isPaused = false;
@@ -1397,7 +1447,7 @@
     card.style.display = "block";
 
     card.innerHTML = `
-      <div class="pdm-card-header">
+      <div class="pdm-card-header" title="Drag to move anywhere">
         <div class="pdm-card-brand">
           <div class="pdm-card-logo">P</div>
           <span class="pdm-card-title">Personal Download Manager</span>
@@ -1439,7 +1489,7 @@
   function showCardError(errMsg) {
     const card = getActiveCard();
     card.innerHTML = `
-      <div class="pdm-card-header">
+      <div class="pdm-card-header" title="Drag to move anywhere">
         <div class="pdm-card-brand">
           <div class="pdm-card-logo">P</div>
           <span class="pdm-card-title">Personal Download Manager</span>

@@ -397,6 +397,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const referer = message.referer || (sender.tab && sender.tab.url) || "";
       const origin = message.origin || "";
       const userAgent = message.user_agent || navigator.userAgent;
+      const proxy = message.proxy || (await getActiveBrowserProxy());
 
       chrome.runtime.sendNativeMessage(
         "com.pdm.native_host",
@@ -408,7 +409,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           cookies: cookies,
           referer: referer,
           user_agent: userAgent,
-          origin: origin
+          origin: origin,
+          proxy: proxy
         },
         (response) => {
           if (chrome.runtime.lastError) {
