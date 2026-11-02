@@ -458,6 +458,7 @@ class MainWindow(QMainWindow):
         self.table_view.setAlternatingRowColors(True)
         self.table_view.setShowGrid(True)
 
+        self.header_view.setMinimumSectionSize(20)
         for i in range(len(DownloadsTableModel.COLUMNS)):
             self.header_view.setSectionResizeMode(i, QHeaderView.Interactive)
 
