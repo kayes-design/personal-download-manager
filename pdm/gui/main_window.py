@@ -427,7 +427,8 @@ class MainWindow(QMainWindow):
         self.category_tree.setAnimated(True)
         self.category_tree.setIndentation(16)
         self.category_tree.setAllColumnsShowFocus(True)
-        self.sidebar_container.setFixedWidth(135)
+        self.sidebar_container.setMinimumWidth(150)
+        self.sidebar_container.setMaximumWidth(280)
 
         self._populate_category_tree()
         self.category_tree.itemClicked.connect(self._on_category_clicked)
@@ -489,6 +490,9 @@ class MainWindow(QMainWindow):
 
         main_splitter.setStretchFactor(0, 0)
         main_splitter.setStretchFactor(1, 1)
+        main_splitter.setCollapsible(0, False)
+        main_splitter.setCollapsible(1, False)
+        main_splitter.setSizes([175, 825])
 
         self.setCentralWidget(main_splitter)
 
