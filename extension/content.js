@@ -185,32 +185,38 @@
     } else if (message.action === "OPEN_BATCH_MODAL") {
       openBatchModal(message.onlySelection);
     } else if (message.action === "SHOW_CONFIRM_CARD" && message.url) {
-      let fn = "";
-      try {
-        const u = new URL(message.url);
-        fn = decodeURIComponent(u.pathname.split("/").pop() || "");
-      } catch (e) {
-        fn = message.url.split("/").pop() || "";
+      let fn = (message.filename || "").trim();
+      if (!fn) {
+        try {
+          const u = new URL(message.url);
+          fn = decodeURIComponent(u.pathname.split("/").pop() || "");
+        } catch (e) {
+          fn = message.url.split("/").pop() || "";
+        }
+        fn = fn.split("?")[0].split("#")[0].trim();
       }
-      fn = fn.split("?")[0].split("#")[0].trim();
       if (!fn || fn.length === 0) {
-        fn = (message.selectionText && message.selectionText.trim().substring(0, 50)) || "Download_File";
+        fn = (message.selectionText && message.selectionText.trim().substring(0, 50)) || getCleanTitle(currentMediaEl || document.querySelector("video")) || "Download_File";
       }
-      const ext = getUrlExtension(message.url);
+      const ext = getUrlExtension(message.url) || getUrlExtension(fn);
       if (ext && !fn.toLowerCase().endsWith(`.${ext}`)) {
         fn = `${fn}.${ext}`;
       } else if (!fn.includes(".")) {
-        fn = `${fn}.bin`;
+        if (currentMediaEl || isPopularMediaPortal(window.location.href) || /video|stream|audio|\.m3u8|\.mpd/i.test(message.url)) {
+          fn = `${fn}.mp4`;
+        }
       }
       showPreDownloadCard({
         url: message.url,
         filename: fn,
-        resolution: ext ? ext.toUpperCase() : "Link",
-        size: 0,
+        resolution: ext ? ext.toUpperCase() : "File",
+        size: message.fileSize || 0,
         referer: window.location.href,
         origin: window.location.origin,
         user_agent: navigator.userAgent
       });
+      sendResponse({ handled: true });
+      return true;
     }
   });
 
@@ -1074,6 +1080,7 @@
       return {
         url: target.url,
         filename: filename,
+        label: `${baseName} (${target.resTag || target.resolution || "HD"})`,
         auto_start: autoStart,
         referer: target.referer || window.location.href,
         origin: target.origin || window.location.origin,
@@ -1082,7 +1089,9 @@
       };
     });
 
-    sendBatchToPDM(items, autoStart);
+    const menu = globalOverlay ? globalOverlay.querySelector(".pdm-stream-menu") : null;
+    if (menu) menu.classList.remove("pdm-show");
+    openBatchModal(false, items);
   }
 
     function sendBatchToPDM(items, autoStart) {
@@ -1453,11 +1462,21 @@
   }
 
   function startActiveDownloadHUD(taskId, filename, size) {
-    currentActiveTaskId = taskId;
     const card = getActiveCard();
     const badge = getMiniBadge();
     badge.style.display = "none";
     card.style.display = "block";
+
+    // If HUD is already active for this exact task, update filename without tearing down DOM
+    if (currentActiveTaskId === taskId && document.getElementById("pdm-hud-bar")) {
+      const fnEl = document.getElementById("pdm-hud-filename");
+      if (fnEl && filename && filename !== "File Download" && !filename.startsWith("http")) {
+        fnEl.textContent = filename;
+        fnEl.title = filename;
+      }
+      return;
+    }
+    currentActiveTaskId = taskId;
 
     card.innerHTML = `
       <div class="pdm-card-header" title="Drag to move anywhere">
@@ -1752,7 +1771,7 @@
       const classText = (a.className && typeof a.className === "string") ? a.className.toLowerCase() : "";
       const isDownloadClass = classText.includes("download") || classText.includes("btn-download");
 
-      if (isKnownExt || hasDownloadAttr || isDownloadText || isDownloadClass) {
+      if (onlySelection || isKnownExt || hasDownloadAttr || isDownloadText || isDownloadClass) {
         seenUrls.add(href);
 
         let title = "";
@@ -1787,8 +1806,6 @@
         } else if (!filename.match(/\.[a-zA-Z0-9]{2,5}$/)) {
           if (/(s\d+|e\d+|episode|season|king|movie|video|1080p|720p|480p)/i.test(filename)) {
             filename = `${filename}.mp4`;
-          } else {
-            filename = `${filename}.bin`;
           }
         }
 
@@ -1831,13 +1848,13 @@
     }
   }
 
-  function openBatchModal(onlySelection = false) {
+  function openBatchModal(onlySelection = false, customItems = null) {
     const existing = document.querySelector(".pdm-modal-backdrop");
     if (existing) existing.remove();
 
-    const links = scanPageDownloadLinks(onlySelection);
-    if (links.length === 0) {
-      showToast("No downloadable links found on this page.");
+    const links = (customItems && customItems.length > 0) ? customItems : scanPageDownloadLinks(onlySelection);
+    if (!links || links.length === 0) {
+      showToast("No downloadable links found.");
       return;
     }
 
@@ -1943,9 +1960,10 @@
         url: c.url,
         filename: c.filename,
         auto_start: autoStart,
-        referer: window.location.href,
-        origin: window.location.origin,
-        user_agent: navigator.userAgent
+        referer: c.referer || window.location.href,
+        origin: c.origin || window.location.origin,
+        user_agent: c.user_agent || navigator.userAgent,
+        cookies: c.cookies || ""
       }));
 
       backdrop.remove();

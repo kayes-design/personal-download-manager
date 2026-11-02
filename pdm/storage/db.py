@@ -235,17 +235,27 @@ class DatabaseManager:
                 (status, error_message, download_id)
             )
 
-    def update_download_file_info(self, download_id: int, filename: str, destination_path: str):
-        """Update filename and destination path (e.g. after media stream downloader resolves title)."""
+    def update_download_file_info(self, download_id: int, filename: str, destination_path: str, category: Optional[str] = None):
+        """Update filename, destination path, and optionally category (e.g. after server probe or media downloader resolves title)."""
         with self._lock, self._get_connection() as conn:
-            conn.execute(
-                """
-                UPDATE downloads
-                SET filename = ?, destination_path = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-                """,
-                (filename, destination_path, download_id)
-            )
+            if category:
+                conn.execute(
+                    """
+                    UPDATE downloads
+                    SET filename = ?, destination_path = ?, category = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (filename, destination_path, category, download_id)
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE downloads
+                    SET filename = ?, destination_path = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (filename, destination_path, download_id)
+                )
 
     def update_download_address(self, download_id: int, new_url: str, cookies: str = "", referer: str = ""):
         """Update download URL and session cookies for an expired or renewed download link."""

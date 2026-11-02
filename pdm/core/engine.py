@@ -1,5 +1,6 @@
 """High-performance dynamic segmented download engine."""
 
+import mimetypes
 import os
 import shutil
 import threading
@@ -9,6 +10,35 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Dict, List, Optional
 import httpx
+
+MIME_EXTENSION_MAP = {
+    "video/mp4": ".mp4",
+    "video/x-matroska": ".mkv",
+    "video/webm": ".webm",
+    "video/quicktime": ".mov",
+    "video/x-msvideo": ".avi",
+    "video/x-flv": ".flv",
+    "video/mp2t": ".ts",
+    "audio/mpeg": ".mp3",
+    "audio/mp3": ".mp3",
+    "audio/mp4": ".m4a",
+    "audio/x-m4a": ".m4a",
+    "audio/aac": ".aac",
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+    "audio/flac": ".flac",
+    "audio/ogg": ".ogg",
+    "audio/opus": ".opus",
+    "application/zip": ".zip",
+    "application/x-zip-compressed": ".zip",
+    "application/x-rar-compressed": ".rar",
+    "application/x-7z-compressed": ".7z",
+    "application/x-tar": ".tar",
+    "application/gzip": ".gz",
+    "application/pdf": ".pdf",
+    "application/vnd.android.package-archive": ".apk",
+    "application/x-msdownload": ".exe",
+}
 
 from pdm.core.limiter import SpeedLimiter
 from pdm.core.media_downloader import MediaStreamDownloader, is_media_stream_url
@@ -352,6 +382,48 @@ class DownloadTask:
                 self.supports_range = True
             else:
                 self.supports_range = False
+
+            # Determine true filename from Content-Disposition and Content-Type
+            cd_header = resp.headers.get("Content-Disposition")
+            server_filename = parse_content_disposition(cd_header) if cd_header else None
+
+            chosen_name = sanitize_filename(server_filename) if server_filename else None
+            effective_name = chosen_name or self.filename
+            stem, ext = os.path.splitext(effective_name)
+
+            # Check if extension is missing or generic server script/dummy format
+            is_generic = not ext or ext.lower() in (
+                ".bin", ".tmp", ".download", ".php", ".asp", ".jsp", ".aspx", ".cgi", ".htm", ".html"
+            )
+            clean_ct = self.content_type.split(";")[0].strip().lower()
+            if is_generic and clean_ct:
+                guessed_ext = MIME_EXTENSION_MAP.get(clean_ct) or mimetypes.guess_extension(clean_ct)
+                if guessed_ext:
+                    if guessed_ext == ".jpe":
+                        guessed_ext = ".jpg"
+                    effective_name = f"{stem}{guessed_ext}"
+                    chosen_name = effective_name
+
+            # Detect matching category from final extension
+            final_ext = os.path.splitext(effective_name)[1].lower()
+            detected_category = None
+            if final_ext in (".mp4", ".mkv", ".avi", ".mov", ".flv", ".webm", ".wmv", ".ts", ".m4v", ".3gp"):
+                detected_category = "Video"
+            elif final_ext in (".mp3", ".wav", ".flac", ".aac", ".ogg", ".m4a", ".opus", ".wma"):
+                detected_category = "Music"
+            elif final_ext in (".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".iso", ".7zip", ".cab", ".tgz"):
+                detected_category = "Compressed"
+            elif final_ext in (".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt", ".epub", ".csv", ".rtf"):
+                detected_category = "Documents"
+            elif final_ext in (".exe", ".msi", ".dmg", ".pkg", ".deb", ".rpm", ".apk", ".bat", ".cmd", ".appimage"):
+                detected_category = "Programs"
+
+            if chosen_name and chosen_name != self.filename:
+                target_dir = os.path.dirname(self.destination_path)
+                new_path = resolve_safe_filepath(target_dir, chosen_name)
+                self.filename = os.path.basename(new_path)
+                self.destination_path = new_path
+                self.db.update_download_file_info(self.task_id, self.filename, self.destination_path, detected_category)
 
             # Update DB metadata
             self.db.update_download_metadata(

@@ -32,10 +32,10 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
           url: targetUrl,
           selectionText: info.selectionText || ""
         }).catch(() => {
-          sendToPDM(targetUrl, "", true, tab ? tab.url : "", tab ? tab.id : null);
+          sendToPDM(targetUrl, "", false, tab ? tab.url : "", tab ? tab.id : null);
         });
       } else {
-        sendToPDM(targetUrl, "", true, "", null);
+        sendToPDM(targetUrl, "", false, "", null);
       }
     }
   } else if (info.menuItemId === "pdm-download-all" || info.menuItemId === "pdm-download-selection") {
@@ -168,13 +168,33 @@ chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
       const url = item.finalUrl || item.url;
       const referer = item.referrer || "";
       const filename = item.filename || "";
+      const size = item.fileSize || 0;
 
       // Find the active tab that initiated this download
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         const activeTabId = tabs && tabs.length > 0 ? tabs[0].id : null;
         chrome.downloads.cancel(item.id, () => {
           chrome.downloads.erase({ id: item.id });
-          sendToPDM(url, filename, true, referer, activeTabId);
+          if (activeTabId) {
+            chrome.tabs.sendMessage(
+              activeTabId,
+              {
+                action: "SHOW_CONFIRM_CARD",
+                url: url,
+                filename: filename,
+                fileSize: size,
+                referer: referer
+              },
+              (res) => {
+                if (chrome.runtime.lastError || !res || !res.handled) {
+                  // Fallback: If tab cannot show in-page modal, send to PDM queued for confirmation
+                  sendToPDM(url, filename, false, referer, activeTabId);
+                }
+              }
+            );
+          } else {
+            sendToPDM(url, filename, false, referer, null);
+          }
         });
       });
       return false;
@@ -626,8 +646,8 @@ async function sendToPDM(url, filename, autoStart = true, referer = "", activeTa
         console.warn("PDM Host Communication Error:", chrome.runtime.lastError.message);
       } else {
         console.log("PDM Task Created Successfully:", response);
-        // If an active tab is available, trigger the in-page active download HUD!
-        if (activeTabId && response && response.task_ids && response.task_ids.length > 0) {
+        // Only trigger in-page active download HUD if autoStart is true
+        if (autoStart && activeTabId && response && response.task_ids && response.task_ids.length > 0) {
           chrome.tabs.sendMessage(activeTabId, {
             type: "PDM_ACTIVE_DOWNLOAD_STARTED",
             taskId: response.task_ids[0],
