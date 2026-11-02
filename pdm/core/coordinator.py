@@ -96,7 +96,24 @@ class DownloadCoordinator:
             raise ValueError(f"Invalid URL: {valid_url}")
 
         if not filename:
+            # Derive filename from URL first
             filename = extract_filename_from_url(valid_url)
+            # If still generic fallback, missing extension, or no filename, try yt_dlp
+            ext_missing = os.path.splitext(filename)[1] == ""
+            if not filename or filename == "download.bin" or ext_missing:
+                try:
+                    from yt_dlp import YoutubeDL
+                    ydl_opts = {"quiet": True, "skip_download": True}
+                    with YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(valid_url, download=False)
+                        title = info.get("title")
+                        if title:
+                            # Preserve original extension if any, otherwise default to .mp4
+                            ext = os.path.splitext(filename)[1] or ".mp4"
+                            filename = sanitize_filename(f"{title}{ext}")
+                except Exception:
+                    # Keep whatever filename we have
+                    pass
         else:
             filename = sanitize_filename(filename)
 
