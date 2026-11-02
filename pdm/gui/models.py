@@ -85,8 +85,22 @@ class DownloadsTableModel(QAbstractTableModel):
         return len(self.COLUMNS)
 
     def headerData(self, section: int, orientation: Qt.Orientation, role: int = Qt.DisplayRole) -> Any:
-        if orientation == Qt.Horizontal and role == Qt.DisplayRole:
-            return self.COLUMNS[section]
+        if orientation == Qt.Horizontal:
+            if role == Qt.DisplayRole:
+                return self.COLUMNS[section]
+            elif role == Qt.ToolTipRole:
+                if section == 1:
+                    return "Queue (Q): Shows whether this file is scheduled in a queue"
+                elif section == 0:
+                    return "File Name: Click to sort"
+                elif section == 2:
+                    return "File Size"
+                elif section == 3:
+                    return "Download Status"
+                elif section == 4:
+                    return "Time Remaining"
+                elif section == 5:
+                    return "Transfer Speed"
         return None
 
     def _apply_sort(self, items: List[Dict[str, Any]], column: int, order: Qt.SortOrder) -> List[Dict[str, Any]]:
@@ -207,6 +221,20 @@ class DownloadsTableModel(QAbstractTableModel):
                 return str(dt)[:19] if dt else ""
             elif col == 7:  # Description
                 return item.get("description") or item.get("url") or ""
+
+        elif role == Qt.ToolTipRole:
+            if col == 1:
+                q_name = item.get("queue_name")
+                status = item.get("status")
+                if q_name:
+                    return f"Queue: {q_name}"
+                elif status == "Queued":
+                    return "Status: Scheduled in Queue"
+                return "Not in Queue (Direct Download)"
+            elif col == 0:
+                return item.get("filename", "")
+            elif col == 7:
+                return item.get("url", "")
 
         elif role == Qt.DecorationRole:
             if col == 0:

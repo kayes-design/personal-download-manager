@@ -107,6 +107,12 @@ QTreeWidget::branch:selected, QTreeView::branch:selected {
     background-color: #2563eb;
 }
 
+/* Splitter */
+QSplitter::handle:horizontal {
+    width: 1px;
+    background-color: #334155;
+}
+
 /* Central Table */
 QTableView {
     background-color: #1e293b;
@@ -335,6 +341,12 @@ QTreeWidget::branch:hover, QTreeView::branch:hover {
 
 QTreeWidget::branch:selected, QTreeView::branch:selected {
     background-color: #2563eb;
+}
+
+/* Splitter */
+QSplitter::handle:horizontal {
+    width: 1px;
+    background-color: #e2e8f0;
 }
 
 /* Central Table */

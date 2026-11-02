@@ -427,7 +427,7 @@ class MainWindow(QMainWindow):
         self.category_tree.setAnimated(True)
         self.category_tree.setIndentation(16)
         self.category_tree.setAllColumnsShowFocus(True)
-        self.sidebar_container.setFixedWidth(200)
+        self.sidebar_container.setFixedWidth(135)
 
         self._populate_category_tree()
         self.category_tree.itemClicked.connect(self._on_category_clicked)
@@ -461,9 +461,9 @@ class MainWindow(QMainWindow):
         for i in range(len(DownloadsTableModel.COLUMNS)):
             self.header_view.setSectionResizeMode(i, QHeaderView.Interactive)
 
-        self.table_view.setColumnWidth(0, 260)  # File Name
-        self.table_view.setColumnWidth(1, 35)   # Q
-        self.table_view.setColumnWidth(2, 90)   # Size
+        self.table_view.setColumnWidth(0, 310)  # File Name
+        self.table_view.setColumnWidth(1, 26)   # Q (Queue column - compact IDM width)
+        self.table_view.setColumnWidth(2, 85)   # Size
         self.table_view.setColumnWidth(3, 140)  # Status
         self.table_view.setColumnWidth(4, 85)   # Time left
         self.table_view.setColumnWidth(5, 105)  # Transfer rate
