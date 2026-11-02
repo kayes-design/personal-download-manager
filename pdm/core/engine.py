@@ -556,8 +556,9 @@ class DownloadTask:
                 return  # Segment already completed
             headers["Range"] = f"bytes={req_start}-{req_end}"
 
-        with open(segment.temp_filepath, "ab") as f:
-            with httpx.Client(follow_redirects=True, timeout=30.0, proxy=self.proxy) as client:
+        with open(segment.temp_filepath, "ab", buffering=262144) as f:
+            limits = httpx.Limits(max_connections=64, max_keepalive_connections=32, keepalive_expiry=60.0)
+            with httpx.Client(follow_redirects=True, timeout=30.0, proxy=self.proxy, limits=limits) as client:
                 with client.stream("GET", self.url, headers=headers) as resp:
                     if self.supports_range and resp.status_code not in (200, 206):
                         if resp.status_code in (401, 403, 410):
@@ -567,7 +568,7 @@ class DownloadTask:
                             )
                         raise ConnectionError(f"Unexpected status {resp.status_code} for range request")
 
-                    for chunk in resp.iter_bytes(chunk_size=32768):
+                    for chunk in resp.iter_bytes(chunk_size=131072):
                         if self.is_stopped():
                             break
 
@@ -628,16 +629,30 @@ class DownloadTask:
         with self._segments_lock:
             ordered_segments = sorted(self.segments, key=lambda s: s.start_byte)
 
+        # Fast zero-copy path for single segment: move directly without disk rewrite
+        if len(ordered_segments) == 1:
+            part_path = ordered_segments[0].temp_filepath
+            if not os.path.exists(part_path):
+                raise FileNotFoundError(f"Missing part file: {part_path}")
+            if os.path.exists(self.destination_path):
+                try:
+                    os.remove(self.destination_path)
+                except Exception:
+                    pass
+            os.replace(part_path, self.destination_path)
+            self.db.update_download_progress(self.task_id, self.downloaded_bytes, "Completed")
+            return
+
         temp_final_path = f"{self.destination_path}.pdm_assembling"
 
         try:
-            with open(temp_final_path, "wb") as final_f:
+            with open(temp_final_path, "wb", buffering=4 * 1024 * 1024) as final_f:
                 for seg in ordered_segments:
                     if not os.path.exists(seg.temp_filepath):
                         raise FileNotFoundError(f"Missing part file: {seg.temp_filepath}")
 
-                    with open(seg.temp_filepath, "rb") as part_f:
-                        shutil.copyfileobj(part_f, final_f, length=1024 * 1024)
+                    with open(seg.temp_filepath, "rb", buffering=4 * 1024 * 1024) as part_f:
+                        shutil.copyfileobj(part_f, final_f, length=4 * 1024 * 1024)
 
             # Atomically replace destination file
             if os.path.exists(self.destination_path):

@@ -85,7 +85,7 @@ class DownloadCoordinator:
         destination_dir: str,
         filename: Optional[str] = None,
         category: str = "Other",
-        connections_count: int = 4,
+        connections_count: int = 8,
         auto_start: bool = True,
         cookies: str = "",
         referer: str = ""

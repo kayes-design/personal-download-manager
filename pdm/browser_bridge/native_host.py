@@ -307,7 +307,7 @@ def main():
                 default_dir = db.get_setting(
                     "default_dir", os.path.join(os.path.expanduser("~"), "Downloads")
                 )
-                default_conns = int(db.get_setting("default_connections", "4"))
+                default_conns = int(db.get_setting("default_connections", "8"))
 
                 items = msg.get("items") or [msg]
 

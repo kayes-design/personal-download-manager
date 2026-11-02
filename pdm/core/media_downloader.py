@@ -316,6 +316,9 @@ class MediaStreamDownloader:
             "no_warnings": True,
             "nocheckcertificate": True,
             "noplaylist": True,
+            "concurrent_fragment_downloads": 8,
+            "http_chunk_size": 10485760,
+            "buffersize": 262144,
             "extractor_args": {
                 "youtubetab": ["skip=authcheck"],
                 "youtube": ["skip=authcheck"],

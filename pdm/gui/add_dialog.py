@@ -340,8 +340,9 @@ class AddDownloadDialog(QDialog):
         conn_lbl = QLabel("Max Connections:")
         conn_lbl.setObjectName("fieldLabel")
         self.connections_spin = QSpinBox()
-        self.connections_spin.setRange(1, 16)
-        self.connections_spin.setValue(4)
+        self.connections_spin.setRange(1, 32)
+        default_conns = int(self.db.get_setting("default_connections", "8")) if self.db else 8
+        self.connections_spin.setValue(default_conns)
 
         grid.addWidget(cat_lbl, 2, 0)
         grid.addWidget(self.category_combo, 2, 1)

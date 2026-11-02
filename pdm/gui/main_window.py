@@ -940,7 +940,7 @@ class MainWindow(QMainWindow):
             default_dir = self.db.get_setting(
                 "default_dir", os.path.join(os.path.expanduser("~"), "Downloads")
             )
-            default_conns = int(self.db.get_setting("default_connections", "4"))
+            default_conns = int(self.db.get_setting("default_connections", "8"))
             show_start_dlg = self.db.get_setting("show_start_dlg", "1") == "1"
 
             for req in incoming:
