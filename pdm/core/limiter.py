@@ -35,24 +35,28 @@ class SpeedLimiter:
         
         Blocks if rate limit would be exceeded.
         """
-        if self._rate <= 0:
-            return  # Unlimited
+        remaining = max(0, num_bytes)
 
-        while True:
+        while remaining:
             with self._lock:
+                if self._rate <= 0:
+                    return
+
                 now = time.monotonic()
                 elapsed = now - self._last_time
                 self._last_time = now
 
                 # Replenish tokens
                 self._tokens = min(self._capacity, self._tokens + elapsed * self._rate)
+                request_bytes = min(remaining, self._capacity)
 
-                if self._tokens >= num_bytes:
-                    self._tokens -= num_bytes
-                    return
+                if self._tokens >= request_bytes:
+                    self._tokens -= request_bytes
+                    remaining -= request_bytes
+                    continue
 
                 # Calculate sleep duration needed for remaining tokens
-                needed = num_bytes - self._tokens
+                needed = request_bytes - self._tokens
                 sleep_time = needed / self._rate
 
             time.sleep(min(sleep_time, 0.1))

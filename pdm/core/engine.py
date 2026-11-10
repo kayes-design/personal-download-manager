@@ -2,6 +2,7 @@
 
 import mimetypes
 import os
+import re
 import shutil
 import threading
 import time
@@ -49,6 +50,11 @@ from pdm.core.security import (
     sanitize_filename,
     validate_url,
 )
+from pdm.core.staging import (
+    cleanup_task_staging_dir,
+    get_staging_path,
+    get_task_staging_dir,
+)
 from pdm.storage.db import DatabaseManager
 
 MIN_CHUNK_SIZE = 128 * 1024  # 128 KB minimum chunk size for multi-connection
@@ -72,6 +78,10 @@ class DownloadStatus(str, Enum):
     COMPLETED = "Completed"
     ERROR = "Error"
     CANCELED = "Canceled"
+
+
+class RangeNotHonoredError(ConnectionError):
+    """Raised when a server returns bytes that do not match a requested range."""
 
 
 @dataclass
@@ -116,7 +126,9 @@ class DownloadTask:
         referer: str = "",
         user_agent: str = "",
         origin: str = "",
-        proxy: Optional[str] = None
+        proxy: Optional[str] = None,
+        category: str = "Other",
+        cookie_jar: str = ""
     ):
         self.task_id = task_id
         self.url = url
@@ -132,6 +144,8 @@ class DownloadTask:
         self.user_agent = user_agent
         self.origin = origin
         self.proxy = proxy or None
+        self.category = category
+        self.cookie_jar = cookie_jar
 
         self.status = DownloadStatus.QUEUED
         self.total_bytes: int = -1
@@ -152,6 +166,7 @@ class DownloadTask:
         self._segments_lock = threading.Lock()
         self.segments: List[SegmentInfo] = []
         self._workers: List[threading.Thread] = []
+        self._worker_errors: List[Exception] = []
         self._last_db_checkpoint = time.monotonic()
 
     def stop(self):
@@ -240,7 +255,20 @@ class DownloadTask:
                 return
 
             # 3. Launch download workers
-            self._execute_workers()
+            try:
+                self._execute_workers()
+            except RangeNotHonoredError:
+                self._reset_segments()
+                self.supports_range = False
+                self.db.update_download_metadata(
+                    self.task_id,
+                    self.total_bytes,
+                    self.etag,
+                    self.last_modified,
+                    False,
+                )
+                self._setup_segments()
+                self._execute_workers()
 
             if self.is_stopped():
                 self._set_status(DownloadStatus.PAUSED)
@@ -277,6 +305,9 @@ class DownloadTask:
     def _download_stream(self):
         """Download streaming media (Reddit, YouTube, HLS, DASH) with automatic audio+video muxing."""
         downloader = MediaStreamDownloader()
+        destination_path = self.destination_path
+        staging_dir = get_task_staging_dir(destination_path, self.task_id)
+        staged_destination = os.path.join(staging_dir, os.path.basename(destination_path))
 
         def on_progress(downloaded: int, total: int, speed: float, eta: Optional[int]):
             self.downloaded_bytes = downloaded
@@ -284,7 +315,7 @@ class DownloadTask:
                 self.total_bytes = total
             self.current_speed = speed
             self.eta_seconds = eta
-            self.db.update_download_progress(self.task_id, self.downloaded_bytes, self.total_bytes)
+            self.db.update_download_progress(self.task_id, self.downloaded_bytes)
             if self.progress_callback:
                 try:
                     self.progress_callback(self)
@@ -294,8 +325,9 @@ class DownloadTask:
         try:
             final_file = downloader.download(
                 url=self.url,
-                destination_path=self.destination_path,
+                destination_path=staged_destination,
                 cookies=self.cookies,
+                cookie_jar=self.cookie_jar,
                 referer=self.referer,
                 user_agent=self.user_agent,
                 origin=self.origin,
@@ -305,12 +337,23 @@ class DownloadTask:
                 proxy=self.proxy,
             )
             if os.path.exists(final_file) and os.path.getsize(final_file) > 0:
-                self.downloaded_bytes = os.path.getsize(final_file)
+                final_file = os.path.abspath(final_file)
+                if os.path.commonpath((staging_dir, final_file)) != os.path.abspath(staging_dir):
+                    raise RuntimeError("Media downloader returned a file outside its staging directory.")
+
+                published_path = os.path.join(
+                    os.path.dirname(destination_path),
+                    os.path.basename(final_file),
+                )
+                os.replace(final_file, published_path)
+                cleanup_task_staging_dir(destination_path, self.task_id)
+
+                self.downloaded_bytes = os.path.getsize(published_path)
                 self.total_bytes = self.downloaded_bytes
-                self.destination_path = final_file
-                self.filename = os.path.basename(final_file)
+                self.destination_path = published_path
+                self.filename = os.path.basename(published_path)
                 self.db.update_download_file_info(self.task_id, self.filename, self.destination_path)
-                self.db.update_download_progress(self.task_id, self.downloaded_bytes, self.total_bytes)
+                self.db.update_download_progress(self.task_id, self.downloaded_bytes)
                 self._set_status(DownloadStatus.COMPLETED)
             else:
                 raise RuntimeError("Media stream extraction produced an empty or inaccessible file.")
@@ -334,6 +377,7 @@ class DownloadTask:
         if self.referer:
             base_headers["Referer"] = self.referer
 
+        previous_record = self.db.get_download(self.task_id)
         with httpx.Client(follow_redirects=True, timeout=15.0, proxy=self.proxy) as client:
             resp = None
             try:
@@ -347,102 +391,145 @@ class DownloadTask:
                 try:
                     probe_headers = dict(base_headers)
                     probe_headers["Range"] = "bytes=0-0"
-                    resp = client.get(self.url, headers=probe_headers)
+                    request = client.build_request("GET", self.url, headers=probe_headers)
+                    resp = client.send(request, stream=True)
                 except Exception as ex:
                     raise ConnectionError(f"Failed to connect to server: {ex}")
 
-            if resp.status_code not in (200, 206):
-                if resp.status_code in (401, 403, 410):
-                    raise ConnectionError(
-                        f"Download link expired or access forbidden (HTTP {resp.status_code}). "
-                        "Click 'Refresh Address' to update URL and resume."
-                    )
-                raise ConnectionError(f"Server returned HTTP status {resp.status_code}")
+            try:
+                self._record_probe_response(resp, previous_record)
+            finally:
+                resp.close()
 
-            # Inspect headers
-            cl_header = resp.headers.get("Content-Length")
-            cr_header = resp.headers.get("Content-Range")
-            ar_header = resp.headers.get("Accept-Ranges", "").lower()
-            self.content_type = resp.headers.get("Content-Type", "").lower()
-            self.final_url = str(resp.url) if resp.url else self.url
+    def _record_probe_response(self, resp: httpx.Response, previous_record: Optional[Dict]):
+        if resp.status_code not in (200, 206):
+            if resp.status_code in (401, 403, 410):
+                raise ConnectionError(
+                    f"Download link expired or access forbidden (HTTP {resp.status_code}). "
+                    "Click 'Refresh Address' to update URL and resume."
+                )
+            raise ConnectionError(f"Server returned HTTP status {resp.status_code}")
 
-            self.etag = resp.headers.get("ETag")
-            self.last_modified = resp.headers.get("Last-Modified")
+        # Inspect headers
+        cl_header = resp.headers.get("Content-Length")
+        cr_header = resp.headers.get("Content-Range")
+        ar_header = resp.headers.get("Accept-Ranges", "").lower()
+        self.content_type = resp.headers.get("Content-Type", "").lower()
+        self.final_url = str(resp.url) if resp.url else self.url
 
-            # Determine total file size
-            if cr_header and "/" in cr_header:
-                total_str = cr_header.split("/")[-1].strip()
-                if total_str.isdigit():
-                    self.total_bytes = int(total_str)
-            elif cl_header and cl_header.isdigit() and resp.status_code == 200:
-                self.total_bytes = int(cl_header)
+        self.etag = resp.headers.get("ETag")
+        self.last_modified = resp.headers.get("Last-Modified")
 
-            # Determine range support
-            if resp.status_code == 206 or "bytes" in ar_header or cr_header:
-                self.supports_range = True
-            else:
-                self.supports_range = False
+        # Determine total file size
+        if cr_header and "/" in cr_header:
+            total_str = cr_header.split("/")[-1].strip()
+            if total_str.isdigit():
+                self.total_bytes = int(total_str)
+        elif cl_header and cl_header.isdigit() and resp.status_code == 200:
+            self.total_bytes = int(cl_header)
 
-            # Determine true filename from Content-Disposition and Content-Type
-            cd_header = resp.headers.get("Content-Disposition")
-            server_filename = parse_content_disposition(cd_header) if cd_header else None
+        # Determine range support
+        if resp.status_code == 206 or "bytes" in ar_header or cr_header:
+            self.supports_range = True
+        else:
+            self.supports_range = False
 
-            chosen_name = sanitize_filename(server_filename) if server_filename else None
-            effective_name = chosen_name or self.filename
-            stem, ext = os.path.splitext(effective_name)
+        # Determine true filename from Content-Disposition and Content-Type
+        cd_header = resp.headers.get("Content-Disposition")
+        server_filename = parse_content_disposition(cd_header) if cd_header else None
 
-            # Check if extension is missing or generic server script/dummy format
-            is_generic = not ext or ext.lower() in (
-                ".bin", ".tmp", ".download", ".php", ".asp", ".jsp", ".aspx", ".cgi", ".htm", ".html"
+        chosen_name = sanitize_filename(server_filename) if server_filename else None
+        effective_name = chosen_name or self.filename
+        stem, ext = os.path.splitext(effective_name)
+
+        # Check if extension is missing or generic server script/dummy format
+        is_generic = not ext or ext.lower() in (
+            ".bin", ".tmp", ".download", ".php", ".asp", ".jsp", ".aspx", ".cgi", ".htm", ".html"
+        )
+        clean_ct = self.content_type.split(";")[0].strip().lower()
+        if is_generic and clean_ct:
+            guessed_ext = MIME_EXTENSION_MAP.get(clean_ct) or mimetypes.guess_extension(clean_ct)
+            if guessed_ext:
+                if guessed_ext == ".jpe":
+                    guessed_ext = ".jpg"
+                effective_name = f"{stem}{guessed_ext}"
+                chosen_name = effective_name
+
+        # Detect matching category from final extension
+        final_ext = os.path.splitext(effective_name)[1].lower()
+        detected_category = None
+        if final_ext in (".mp4", ".mkv", ".avi", ".mov", ".flv", ".webm", ".wmv", ".ts", ".m4v", ".3gp"):
+            detected_category = "Video"
+        elif final_ext in (".mp3", ".wav", ".flac", ".aac", ".ogg", ".m4a", ".opus", ".wma"):
+            detected_category = "Music"
+        elif final_ext in (".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".iso", ".7zip", ".cab", ".tgz"):
+            detected_category = "Compressed"
+        elif final_ext in (".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt", ".epub", ".csv", ".rtf"):
+            detected_category = "Documents"
+        elif final_ext in (".exe", ".msi", ".dmg", ".pkg", ".deb", ".rpm", ".apk", ".bat", ".cmd", ".appimage"):
+            detected_category = "Programs"
+
+        if chosen_name and chosen_name != self.filename:
+            target_dir = os.path.dirname(self.destination_path)
+            new_path = resolve_safe_filepath(target_dir, chosen_name)
+            self.filename = os.path.basename(new_path)
+            self.destination_path = new_path
+            self.db.update_download_file_info(self.task_id, self.filename, self.destination_path, detected_category)
+
+        existing_segments = self.db.get_segments(self.task_id)
+        if existing_segments and previous_record:
+            old_etag = previous_record.get("etag")
+            old_last_modified = previous_record.get("last_modified")
+            old_total_bytes = previous_record.get("total_bytes")
+            validators_changed = (
+                (old_etag or self.etag) and old_etag != self.etag
+            ) or (
+                (old_last_modified or self.last_modified)
+                and old_last_modified != self.last_modified
             )
-            clean_ct = self.content_type.split(";")[0].strip().lower()
-            if is_generic and clean_ct:
-                guessed_ext = MIME_EXTENSION_MAP.get(clean_ct) or mimetypes.guess_extension(clean_ct)
-                if guessed_ext:
-                    if guessed_ext == ".jpe":
-                        guessed_ext = ".jpg"
-                    effective_name = f"{stem}{guessed_ext}"
-                    chosen_name = effective_name
-
-            # Detect matching category from final extension
-            final_ext = os.path.splitext(effective_name)[1].lower()
-            detected_category = None
-            if final_ext in (".mp4", ".mkv", ".avi", ".mov", ".flv", ".webm", ".wmv", ".ts", ".m4v", ".3gp"):
-                detected_category = "Video"
-            elif final_ext in (".mp3", ".wav", ".flac", ".aac", ".ogg", ".m4a", ".opus", ".wma"):
-                detected_category = "Music"
-            elif final_ext in (".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".iso", ".7zip", ".cab", ".tgz"):
-                detected_category = "Compressed"
-            elif final_ext in (".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt", ".epub", ".csv", ".rtf"):
-                detected_category = "Documents"
-            elif final_ext in (".exe", ".msi", ".dmg", ".pkg", ".deb", ".rpm", ".apk", ".bat", ".cmd", ".appimage"):
-                detected_category = "Programs"
-
-            if chosen_name and chosen_name != self.filename:
-                target_dir = os.path.dirname(self.destination_path)
-                new_path = resolve_safe_filepath(target_dir, chosen_name)
-                self.filename = os.path.basename(new_path)
-                self.destination_path = new_path
-                self.db.update_download_file_info(self.task_id, self.filename, self.destination_path, detected_category)
-
-            # Update DB metadata
-            self.db.update_download_metadata(
-                self.task_id,
-                self.total_bytes,
-                self.etag,
-                self.last_modified,
-                self.supports_range
+            size_changed = (
+                old_total_bytes is not None
+                and old_total_bytes > 0
+                and self.total_bytes > 0
+                and old_total_bytes != self.total_bytes
             )
+            if validators_changed or size_changed:
+                for segment in existing_segments:
+                    part_path = segment["temp_filepath"]
+                    if os.path.exists(part_path):
+                        os.remove(part_path)
+                self.db.clear_segments(self.task_id)
+                self.db.update_download_progress(self.task_id, 0)
+                self.downloaded_bytes = 0
+
+        self.db.update_download_metadata(
+            self.task_id,
+            self.total_bytes,
+            self.etag,
+            self.last_modified,
+            self.supports_range
+        )
 
     def _setup_segments(self):
         """Initialize or resume non-overlapping segments."""
         with self._segments_lock:
             existing = self.db.get_segments(self.task_id)
+            get_task_staging_dir(self.destination_path, self.task_id)
             if existing:
                 valid = True
                 loaded = []
                 for s in existing:
                     part_file = s["temp_filepath"]
+                    staged_part = get_staging_path(
+                        self.destination_path,
+                        self.task_id,
+                        f"part_{s['segment_index']}.bin",
+                    )
+                    if os.path.abspath(part_file) != os.path.abspath(staged_part):
+                        if os.path.exists(part_file):
+                            os.replace(part_file, staged_part)
+                        part_file = staged_part
+                        self.db.update_segment_temp_filepath(s["id"], part_file)
                     if os.path.exists(part_file):
                         actual_size = os.path.getsize(part_file)
                         loaded.append(
@@ -475,7 +562,9 @@ class DownloadTask:
 
             if not self.supports_range or self.total_bytes <= 0:
                 # Single connection mode
-                part_path = f"{self.destination_path}.pdm_part_0"
+                part_path = get_staging_path(
+                    self.destination_path, self.task_id, "part_0.bin"
+                )
                 with open(part_path, "wb"):
                     pass
                 seg_id = self.db.create_segment(
@@ -499,7 +588,9 @@ class DownloadTask:
                     start = i * chunk_size
                     end = (self.total_bytes - 1) if (i == num_segments - 1) else (start + chunk_size - 1)
 
-                    part_path = f"{self.destination_path}.pdm_part_{i}"
+                    part_path = get_staging_path(
+                        self.destination_path, self.task_id, f"part_{i}.bin"
+                    )
                     with open(part_path, "wb"):
                         pass
 
@@ -521,6 +612,7 @@ class DownloadTask:
         """Spawn workers for each segment."""
         num_workers = len(self.segments)
         self._workers.clear()
+        self._worker_errors.clear()
 
         for worker_idx in range(num_workers):
             t = threading.Thread(
@@ -535,6 +627,19 @@ class DownloadTask:
         # Wait for all workers to finish
         for t in self._workers:
             t.join()
+        if self._worker_errors:
+            raise self._worker_errors[0]
+
+    def _reset_segments(self):
+        """Discard incomplete segments before retrying with a single connection."""
+        with self._segments_lock:
+            for segment in self.segments:
+                if os.path.exists(segment.temp_filepath):
+                    os.remove(segment.temp_filepath)
+            self.db.clear_segments(self.task_id)
+            self.segments.clear()
+            self.downloaded_bytes = 0
+            self.db.update_download_progress(self.task_id, 0)
 
     def _worker_loop(self, worker_id: int):
         """Worker thread: claims an unfinished segment and streams its exact byte range.
@@ -572,7 +677,11 @@ class DownloadTask:
                                 self.db.update_segment_range(donor.segment_id, donor.start_byte, mid)
 
                                 new_idx = len(self.segments)
-                                new_part = f"{self.destination_path}.pdm_part_{new_idx}"
+                                new_part = get_staging_path(
+                                    self.destination_path,
+                                    self.task_id,
+                                    f"part_{new_idx}.bin",
+                                )
                                 with open(new_part, "wb"):
                                     pass
                                 new_seg_id = self.db.create_segment(
@@ -603,10 +712,11 @@ class DownloadTask:
                         self.db.update_segment_progress(
                             segment.segment_id, segment.downloaded_bytes, "Completed"
                         )
-            except Exception:
+            except Exception as error:
                 with self._segments_lock:
                     segment.worker_id = None
                     segment.status = "Error"
+                    self._worker_errors.append(error)
                 if not self.is_stopped():
                     break
 
@@ -621,24 +731,44 @@ class DownloadTask:
             headers["Cookie"] = self.cookies
         if self.referer:
             headers["Referer"] = self.referer
+        requested_range = None
         if self.supports_range:
             req_start = segment.current_byte
             req_end = segment.end_byte
             if req_start > req_end:
                 return  # Segment already completed
             headers["Range"] = f"bytes={req_start}-{req_end}"
+            requested_range = (req_start, req_end)
 
         with open(segment.temp_filepath, "ab", buffering=262144) as f:
             limits = httpx.Limits(max_connections=64, max_keepalive_connections=32, keepalive_expiry=60.0)
             with httpx.Client(follow_redirects=True, timeout=30.0, proxy=self.proxy, limits=limits) as client:
                 with client.stream("GET", self.url, headers=headers) as resp:
-                    if self.supports_range and resp.status_code not in (200, 206):
+                    if requested_range and resp.status_code == 200:
+                        raise RangeNotHonoredError(
+                            "Server ignored a byte-range request; retrying with one connection."
+                        )
+                    if requested_range and resp.status_code != 206:
                         if resp.status_code in (401, 403, 410):
                             raise ConnectionError(
                                 f"Download link expired (HTTP {resp.status_code}). "
                                 "Click 'Refresh Address' to update URL and resume."
                             )
                         raise ConnectionError(f"Unexpected status {resp.status_code} for range request")
+                    if requested_range:
+                        content_range = resp.headers.get("Content-Range", "")
+                        match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", content_range)
+                        if (
+                            not match
+                            or int(match.group(1)) != requested_range[0]
+                            or int(match.group(2)) != requested_range[1]
+                            or (self.total_bytes > 0 and int(match.group(3)) != self.total_bytes)
+                        ):
+                            raise RangeNotHonoredError(
+                                "Server returned an invalid byte range; retrying with one connection."
+                            )
+                    elif resp.status_code < 200 or resp.status_code >= 300:
+                        raise ConnectionError(f"Server returned HTTP status {resp.status_code}")
 
                     for chunk in resp.iter_bytes(chunk_size=131072):
                         if self.is_stopped():
@@ -706,16 +836,14 @@ class DownloadTask:
             part_path = ordered_segments[0].temp_filepath
             if not os.path.exists(part_path):
                 raise FileNotFoundError(f"Missing part file: {part_path}")
-            if os.path.exists(self.destination_path):
-                try:
-                    os.remove(self.destination_path)
-                except Exception:
-                    pass
             os.replace(part_path, self.destination_path)
             self.db.update_download_progress(self.task_id, self.downloaded_bytes, "Completed")
+            cleanup_task_staging_dir(self.destination_path, self.task_id)
             return
 
-        temp_final_path = f"{self.destination_path}.pdm_assembling"
+        temp_final_path = get_staging_path(
+            self.destination_path, self.task_id, "assembled.tmp"
+        )
 
         try:
             with open(temp_final_path, "wb", buffering=4 * 1024 * 1024) as final_f:
@@ -727,8 +855,6 @@ class DownloadTask:
                         shutil.copyfileobj(part_f, final_f, length=4 * 1024 * 1024)
 
             # Atomically replace destination file
-            if os.path.exists(self.destination_path):
-                os.remove(self.destination_path)
             os.replace(temp_final_path, self.destination_path)
 
             # Cleanup part files
@@ -741,6 +867,7 @@ class DownloadTask:
 
             # Update DB
             self.db.update_download_progress(self.task_id, self.downloaded_bytes, "Completed")
+            cleanup_task_staging_dir(self.destination_path, self.task_id)
 
         except Exception as e:
             if os.path.exists(temp_final_path):

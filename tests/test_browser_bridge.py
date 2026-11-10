@@ -34,10 +34,26 @@ def test_native_batch_handling(tmp_path):
     db.set_setting("show_start_dlg", "0")
 
     # Instant start
-    item1 = {"url": "https://example.com/v1.mp4", "filename": "v1.mp4", "auto_start": True}
+    item1 = {
+        "url": "https://example.com/v1.mp4",
+        "filename": "v1.mp4",
+        "auto_start": True,
+        "file_size": 1024,
+        "cookie_jar": "# Netscape HTTP Cookie File\n.example.com\tTRUE\t/\tTRUE\t0\tSID\tvalue\n",
+    }
     tid1 = handle_download_item(db, str(tmp_path), 4, item1)
     assert tid1 is not None
     assert db.get_download(tid1)["status"] == "Queued"
+    assert db.get_download(tid1)["cookie_jar"] == item1["cookie_jar"]
+    assert db.get_download(tid1)["total_bytes"] == 1024
+
+    picture_item = {
+        "url": "https://example.com/photo.png",
+        "filename": "photo.png",
+        "auto_start": False,
+    }
+    picture_id = handle_download_item(db, str(tmp_path), 4, picture_item)
+    assert db.get_download(picture_id)["category"] == "Pictures"
 
     # Add to queue for later (auto_start=False)
     item2 = {"url": "https://example.com/v2.mp4", "filename": "v2.mp4", "auto_start": False}

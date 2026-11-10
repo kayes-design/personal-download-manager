@@ -631,18 +631,16 @@
   box-sizing: border-box !important;
   overflow: hidden !important;
   user-select: none !important;
-  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s ease !important;
-  animation: pdmSlideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1) !important;
+  transition: opacity 0.2s ease !important;
+  animation: pdmCardFadeIn 0.2s ease-out !important;
 }
 
-@keyframes pdmSlideUp {
+@keyframes pdmCardFadeIn {
   from {
     opacity: 0;
-    transform: translateY(20px) scale(0.96);
   }
   to {
     opacity: 1;
-    transform: translateY(0) scale(1);
   }
 }
 

@@ -3,6 +3,7 @@ TikTok, Twitter/X, Twitch, Vimeo, Bilibili, Dailymotion, Rumble, Kick, SoundClou
 Automatically downloads separate video and audio tracks and merges them via FFmpeg.
 """
 
+import importlib
 import os
 import shutil
 import subprocess
@@ -12,9 +13,6 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Set
 from urllib.parse import urlparse
-import imageio_ffmpeg
-import yt_dlp
-import yt_dlp.extractor
 
 # Comprehensive registry of popular video, audio, and streaming domains
 POPULAR_MEDIA_DOMAINS: Set[str] = {
@@ -58,9 +56,22 @@ STREAM_INDICATORS = (
     "cdninstagram.com", "twimg.com", "vimeocdn.com"
 )
 
+DIRECT_FILE_EXTENSIONS = {
+    ".7z", ".apk", ".avi", ".bin", ".bz2", ".cab", ".csv", ".deb",
+    ".dmg", ".doc", ".docx", ".epub", ".exe", ".flac", ".flv", ".gz",
+    ".iso", ".jar", ".jpeg", ".jpg", ".m4a", ".m4v", ".mkv", ".mov",
+    ".mp3", ".mp4", ".msi", ".pdf", ".png", ".ppt", ".pptx", ".ps1",
+    ".rar", ".rpm", ".tar", ".txt", ".wav", ".webm", ".whl", ".wim",
+    ".xls", ".xlsx", ".xz", ".zip",
+}
+
 # Cache yt-dlp extractors for fast offline URL matching (excluding generic)
 _CACHED_EXTRACTORS = None
 _EXTRACTORS_LOCK = threading.Lock()
+
+
+def _load_yt_dlp():
+    return importlib.import_module("yt_dlp")
 
 
 def _get_extractors():
@@ -69,8 +80,9 @@ def _get_extractors():
         with _EXTRACTORS_LOCK:
             if _CACHED_EXTRACTORS is None:
                 try:
+                    extractor_module = importlib.import_module("yt_dlp.extractor")
                     _CACHED_EXTRACTORS = [
-                        e for e in yt_dlp.extractor.gen_extractors()
+                        e for e in extractor_module.gen_extractors()
                         if getattr(e, "IE_NAME", "") != "generic"
                     ]
                 except Exception:
@@ -91,6 +103,9 @@ def is_media_stream_url(url: str) -> bool:
     # 2. Fast check against common popular media domains
     if any(domain in lower for domain in POPULAR_MEDIA_DOMAINS):
         return True
+
+    if os.path.splitext(urlparse(lower).path)[1] in DIRECT_FILE_EXTENSIONS:
+        return False
 
     # 3. Match against yt-dlp's 1,750+ offline site extractors
     extractors = _get_extractors()
@@ -119,6 +134,7 @@ def normalize_media_url(url: str) -> str:
 def get_ffmpeg_path() -> Optional[str]:
     """Return path to bundled imageio-ffmpeg or system ffmpeg executable."""
     try:
+        imageio_ffmpeg = importlib.import_module("imageio_ffmpeg")
         exe = imageio_ffmpeg.get_ffmpeg_exe()
         if exe and os.path.exists(exe):
             return exe
@@ -168,11 +184,44 @@ def ensure_h264_compatibility(file_path: str) -> str:
     return file_path
 
 
-def create_temp_netscape_cookiefile(cookies_str: str, url: str) -> Optional[str]:
-    """Format raw cookie string into temporary Netscape cookiefile for yt-dlp authenticated sessions."""
-    if not cookies_str:
+def create_temp_netscape_cookiefile(
+    cookies_str: str,
+    url: str,
+    cookie_jar: str = "",
+) -> Optional[str]:
+    """Create a temporary, domain-scoped Netscape cookie file for yt-dlp."""
+    if not cookies_str and not cookie_jar:
         return None
     try:
+        if cookie_jar:
+            cookie_lines = ["# Netscape HTTP Cookie File"]
+            for line in cookie_jar.splitlines():
+                if not line or (line.startswith("#") and not line.startswith("#HttpOnly_")):
+                    continue
+                fields = line.split("\t")
+                if (
+                    len(fields) == 7
+                    and fields[1] in ("TRUE", "FALSE")
+                    and fields[2].startswith("/")
+                    and fields[3] in ("TRUE", "FALSE")
+                    and fields[4].isdigit()
+                    and fields[0].removeprefix("#HttpOnly_")
+                    and fields[5]
+                    and "\r" not in fields[6]
+                    and "\n" not in fields[6]
+                ):
+                    cookie_lines.append(line)
+            if len(cookie_lines) > 1:
+                tf = tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".txt", prefix="pdm_cookies_", delete=False
+                )
+                tf.write("\n".join(cookie_lines) + "\n")
+                tf.close()
+                return tf.name
+
+        if not cookies_str:
+            return None
+
         host = urlparse(url).hostname or "youtube.com"
         domains = set()
         parts = host.split(".")
@@ -219,6 +268,7 @@ class MediaStreamDownloader:
         is_stopped_callback: Optional[Callable[[], bool]] = None,
         resolution_callback: Optional[Callable[[str], None]] = None,
         proxy: Optional[str] = None,
+        cookie_jar: str = "",
     ) -> str:
         """Download video + audio from any site and merge into a single playable MP4 file.
 
@@ -314,7 +364,6 @@ class MediaStreamDownloader:
             "outtmpl": out_template,
             "quiet": True,
             "no_warnings": True,
-            "nocheckcertificate": True,
             "noplaylist": True,
             "concurrent_fragment_downloads": 8,
             "http_chunk_size": 10485760,
@@ -347,7 +396,7 @@ class MediaStreamDownloader:
                 "Accept-Language": "en-US,en;q=0.9",
             }
 
-        cookie_file = create_temp_netscape_cookiefile(cookies, target_url) if cookies else None
+        cookie_file = create_temp_netscape_cookiefile(cookies, target_url, cookie_jar)
         if cookie_file and os.path.exists(cookie_file):
             ydl_opts["cookiefile"] = cookie_file
 
@@ -366,14 +415,28 @@ class MediaStreamDownloader:
         yt_error = None
         info = None
         ydl_final = None
+        extractor_url = (
+            referer
+            if referer and is_media_stream_url(referer) and is_media_stream_url(target_url)
+            else target_url
+        )
 
         def _run_extraction(opts):
+            yt_dlp = _load_yt_dlp()
             with yt_dlp.YoutubeDL(opts) as ydl:
-                return ydl.extract_info(target_url, download=True), ydl
+                return ydl.extract_info(extractor_url, download=True), ydl
+
+        def _remove_cookie_file():
+            if cookie_file and os.path.exists(cookie_file):
+                try:
+                    os.remove(cookie_file)
+                except OSError:
+                    pass
 
         try:
             info, ydl_final = _run_extraction(ydl_opts)
         except InterruptedError:
+            _remove_cookie_file()
             raise
         except Exception as primary_err:
             yt_error = primary_err
@@ -388,9 +451,12 @@ class MediaStreamDownloader:
                 info, ydl_final = _run_extraction(fallback_opts)
                 yt_error = None
             except InterruptedError:
+                _remove_cookie_file()
                 raise
             except Exception as fb_err:
                 yt_error = fb_err
+
+        _remove_cookie_file()
 
         if info:
             width = info.get("width")
@@ -423,12 +489,6 @@ class MediaStreamDownloader:
                         return ensure_h264_compatibility(prepared)
                 except Exception:
                     pass
-
-        if cookie_file and os.path.exists(cookie_file):
-            try:
-                os.remove(cookie_file)
-            except Exception:
-                pass
 
         # If yt-dlp succeeded and output file exists
         expected_file = os.path.join(dest_dir, f"{dest_name}.mp4")
@@ -504,7 +564,6 @@ class MediaStreamDownloader:
             headers_list.append(f"Origin: {origin.replace('\r', '').replace('\n', '')}")
         if cookies:
             headers_list.append(f"Cookie: {cookies.replace('\r', '').replace('\n', '')}")
-            headers_list.append(f"Cookie: {cookies}")
 
         headers_arg = "\r\n".join(headers_list) + "\r\n"
 
@@ -595,7 +654,6 @@ def extract_playlist_entries(url: str, cookies: str = "", referer: str = "", max
         "extract_flat": "in_playlist",
         "quiet": True,
         "no_warnings": True,
-        "nocheckcertificate": True,
         "playlist_items": f"1-{max_items}",
         "extractor_args": {
             "youtubetab": ["skip=authcheck"],
@@ -617,6 +675,7 @@ def extract_playlist_entries(url: str, cookies: str = "", referer: str = "", max
 
     entries: List[Dict[str, Any]] = []
     try:
+        yt_dlp = _load_yt_dlp()
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             if not info:

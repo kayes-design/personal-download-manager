@@ -1,9 +1,9 @@
-"""Add URL Download Dialog with clipboard auto-fill, category detection and premium modern dark styling."""
+"""Add URL Download Dialog with clipboard auto-fill and IDM-style file details."""
 
 import os
 from typing import Optional, Tuple
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtGui import QFont, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -17,6 +17,8 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QSpinBox,
+    QStyle,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -31,6 +33,7 @@ from pdm.gui.icons import (
     create_document_icon,
     create_folder_icon,
     create_music_icon,
+    create_picture_icon,
     create_programs_icon,
     create_video_icon,
 )
@@ -40,6 +43,10 @@ CATEGORY_EXTENSIONS = {
     "Compressed": {".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".iso"},
     "Documents": {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt", ".epub"},
     "Music": {".mp3", ".flac", ".wav", ".aac", ".ogg", ".m4a"},
+    "Pictures": {
+        ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg", ".tif",
+        ".tiff", ".ico", ".heic", ".avif", ".raw", ".cr2", ".nef",
+    },
     "Video": {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".webm", ".flv", ".m4v"},
     "Programs": {".exe", ".msi", ".bat", ".cmd", ".ps1", ".dmg", ".apk", ".appimage"}
 }
@@ -60,6 +67,8 @@ def get_category_icon(category: str, filename: str = "") -> QIcon:
         return create_video_icon()
     if "music" in cat or fn.endswith((".mp3", ".wav", ".flac", ".aac", ".ogg", ".m4a")):
         return create_music_icon()
+    if "picture" in cat or fn.endswith((".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg", ".tif", ".tiff", ".ico", ".heic", ".avif")):
+        return create_picture_icon()
     if "compressed" in cat or fn.endswith((".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".iso")):
         return create_compressed_icon()
     if "document" in cat or fn.endswith((".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt", ".epub")):
@@ -71,148 +80,79 @@ def get_category_icon(category: str, filename: str = "") -> QIcon:
 
 DIALOG_STYLESHEET = """
 QDialog {
-    background-color: #0f172a;
-    color: #f8fafc;
-    font-family: "Segoe UI", -apple-system, sans-serif;
-}
-#mainCard {
-    background-color: #1e293b;
-    border: 1px solid #334155;
-    border-radius: 10px;
-}
-#iconBadgeFrame {
-    background-color: #0b1120;
-    border: 1px solid #334155;
-    border-radius: 8px;
+    background-color: #f5f6f7;
+    color: #252525;
+    font-size: 9pt;
 }
 QLabel {
-    color: #94a3b8;
-    font-size: 12px;
-}
-QLabel#headerTitle {
-    color: #f8fafc;
-    font-size: 15px;
-    font-weight: 700;
-}
-QLabel#headerSub {
-    color: #64748b;
-    font-size: 11px;
+    color: #333333;
 }
 QLabel#fieldLabel {
-    color: #cbd5e1;
-    font-size: 12px;
-    font-weight: 600;
+    color: #333333;
+    font-size: 9pt;
 }
-QLineEdit {
-    background-color: #0b1120;
-    border: 1px solid #334155;
-    border-radius: 6px;
-    padding: 7px 10px;
-    color: #f8fafc;
-    font-size: 12px;
-    selection-background-color: #2563eb;
+QLineEdit, QComboBox, QSpinBox {
+    background: #ffffff;
+    border: 1px solid #c8cdd2;
+    border-radius: 4px;
+    padding: 5px 8px;
+    color: #222222;
+    selection-background-color: #1683c4;
 }
-QLineEdit:focus {
-    border-color: #38bdf8;
-    background-color: #030712;
-}
-QComboBox {
-    background-color: #0b1120;
-    border: 1px solid #334155;
-    border-radius: 6px;
-    padding: 6px 10px;
-    color: #f8fafc;
-    font-size: 12px;
-    min-width: 130px;
-}
-QComboBox:focus {
-    border-color: #38bdf8;
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus {
+    border: 1px solid #1683c4;
 }
 QComboBox::drop-down {
-    border: none;
-    width: 24px;
+    border-left: 1px solid #d5d9dd;
+    width: 25px;
 }
 QComboBox QAbstractItemView {
-    background-color: #1e293b;
-    border: 1px solid #334155;
-    selection-background-color: #2563eb;
-    color: #f8fafc;
-    outline: none;
-    padding: 4px;
+    background: #ffffff;
+    color: #222222;
+    selection-background-color: #1683c4;
+    selection-color: #ffffff;
 }
-QSpinBox {
-    background-color: #0b1120;
-    border: 1px solid #334155;
-    border-radius: 6px;
-    padding: 6px 10px;
-    color: #f8fafc;
-    font-size: 12px;
-    min-width: 70px;
+QPushButton, QToolButton {
+    min-height: 30px;
+    padding: 3px 14px;
+    background: #f8f8f8;
+    border: 1px solid #c6cbd0;
+    border-radius: 4px;
+    color: #252525;
 }
-QSpinBox:focus {
-    border-color: #38bdf8;
-}
-QCheckBox {
-    color: #94a3b8;
-    font-size: 11px;
-    spacing: 6px;
-}
-QCheckBox:hover {
-    color: #cbd5e1;
-}
-QPushButton#browseBtn {
-    background-color: #334155;
-    border: 1px solid #475569;
-    border-radius: 6px;
-    padding: 7px 14px;
-    color: #f8fafc;
-    font-weight: 600;
-    font-size: 12px;
-}
-QPushButton#browseBtn:hover {
-    background-color: #475569;
-    border-color: #64748b;
-}
-QPushButton#cancelBtn {
-    background-color: #1e293b;
-    border: 1px solid #334155;
-    border-radius: 6px;
-    padding: 8px 18px;
-    color: #94a3b8;
-    font-weight: 500;
-    font-size: 12px;
-}
-QPushButton#cancelBtn:hover {
-    background-color: #334155;
-    color: #f1f5f9;
-}
-QPushButton#laterBtn {
-    background-color: #334155;
-    border: 1px solid #475569;
-    border-radius: 6px;
-    padding: 8px 20px;
-    color: #f8fafc;
-    font-weight: 600;
-    font-size: 12px;
-}
-QPushButton#laterBtn:hover {
-    background-color: #475569;
-    border-color: #64748b;
+QPushButton:hover, QToolButton:hover {
+    background: #eaf3f9;
+    border-color: #5da7d2;
 }
 QPushButton#startBtn {
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2563eb, stop:1 #0284c7);
-    border: 1px solid #38bdf8;
-    border-radius: 6px;
-    padding: 8px 24px;
+    background: #1683c4;
+    border-color: #0876b5;
     color: #ffffff;
-    font-weight: 700;
-    font-size: 13px;
+    font-weight: 600;
 }
 QPushButton#startBtn:hover {
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #1d4ed8, stop:1 #0369a1);
+    background: #0876b5;
 }
 QPushButton#startBtn:pressed {
-    background-color: #1e40af;
+    background: #06669e;
+}
+QPushButton#laterBtn {
+    font-weight: 600;
+}
+QPushButton#cancelBtn {
+    color: #b04444;
+}
+QToolButton#advancedBtn {
+    min-height: 22px;
+    border: none;
+    background: transparent;
+    color: #4c6575;
+    text-align: left;
+    padding-left: 0;
+}
+QLabel#fileSizeLabel {
+    color: #1679b4;
+    font-weight: 600;
 }
 """
 
@@ -232,13 +172,16 @@ class AddDownloadDialog(QDialog):
         referer: str = "",
         user_agent: str = "",
         origin: str = "",
-        proxy: str = ""
+        proxy: str = "",
+        cookie_jar: str = "",
+        file_size: int = 0
     ):
         super().__init__(parent)
         self.setWindowTitle("Download File Info")
         self.setMinimumWidth(560)
-        self.resize(580, 420)
+        self.resize(600, 310)
         self.setStyleSheet(DIALOG_STYLESHEET)
+        self.setFont(QFont("Arial", 9))
 
         app = QApplication.instance()
         if app and app.windowIcon():
@@ -250,6 +193,8 @@ class AddDownloadDialog(QDialog):
         self.playlist_dir = ""
         self.playlist_cat = ""
         self.cookies = cookies
+        self.cookie_jar = cookie_jar
+        self.file_size = max(0, int(file_size or 0))
         self.referer = referer
         self.user_agent = user_agent
         self.origin = origin
@@ -272,131 +217,108 @@ class AddDownloadDialog(QDialog):
 
     def _setup_ui(self):
         root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(18, 16, 18, 16)
-        root_layout.setSpacing(14)
+        root_layout.setContentsMargins(18, 14, 18, 14)
+        root_layout.setSpacing(9)
 
-        # 1. Header with dynamic icon badge
-        header_layout = QHBoxLayout()
-        header_layout.setSpacing(12)
+        form = QGridLayout()
+        form.setHorizontalSpacing(10)
+        form.setVerticalSpacing(8)
+        form.setColumnMinimumWidth(0, 52)
 
-        badge_frame = QFrame()
-        badge_frame.setObjectName("iconBadgeFrame")
-        badge_frame.setFixedSize(44, 44)
-        badge_inner = QVBoxLayout(badge_frame)
-        badge_inner.setContentsMargins(0, 0, 0, 0)
-        badge_inner.setAlignment(Qt.AlignCenter)
+        def make_label(text: str) -> QLabel:
+            label = QLabel(text)
+            label.setObjectName("fieldLabel")
+            return label
 
-        self.icon_badge_lbl = QLabel()
-        self.icon_badge_lbl.setAlignment(Qt.AlignCenter)
-        badge_inner.addWidget(self.icon_badge_lbl)
-        header_layout.addWidget(badge_frame)
-
-        title_vbox = QVBoxLayout()
-        title_vbox.setSpacing(2)
-        title_lbl = QLabel("Download File Info")
-        title_lbl.setObjectName("headerTitle")
-        sub_lbl = QLabel("Configure destination folder and acceleration options")
-        sub_lbl.setObjectName("headerSub")
-        title_vbox.addWidget(title_lbl)
-        title_vbox.addWidget(sub_lbl)
-        header_layout.addLayout(title_vbox)
-        header_layout.addStretch()
-
-        root_layout.addLayout(header_layout)
-
-        # 2. Main Card Surface
-        card = QFrame()
-        card.setObjectName("mainCard")
-        grid = QGridLayout(card)
-        grid.setContentsMargins(16, 14, 16, 14)
-        grid.setHorizontalSpacing(12)
-        grid.setVerticalSpacing(10)
-
-        # URL Input
-        url_lbl = QLabel("URL:")
-        url_lbl.setObjectName("fieldLabel")
         self.url_input = QLineEdit()
         self.url_input.setPlaceholderText("https://example.com/file.zip")
         self.url_input.textChanged.connect(self._on_url_changed)
-        grid.addWidget(url_lbl, 0, 0)
-        grid.addWidget(self.url_input, 0, 1, 1, 3)
+        form.addWidget(make_label("URL:"), 0, 0)
+        form.addWidget(self.url_input, 0, 1, 1, 2)
 
-        # Filename Input
-        fn_lbl = QLabel("File Name:")
-        fn_lbl.setObjectName("fieldLabel")
         self.filename_input = QLineEdit()
         self.filename_input.setPlaceholderText("Auto-detected from URL")
         self.filename_input.textChanged.connect(self._update_file_icon)
-        grid.addWidget(fn_lbl, 1, 0)
-        grid.addWidget(self.filename_input, 1, 1, 1, 3)
+        form.addWidget(make_label("Name:"), 1, 0)
+        form.addWidget(self.filename_input, 1, 1, 1, 2)
 
-        # Category and Connections in one row
-        cat_lbl = QLabel("Category:")
-        cat_lbl.setObjectName("fieldLabel")
+        self.file_size_label = QLabel(
+            self._format_file_size(self.file_size) if self.file_size else "Unknown"
+        )
+        self.file_size_label.setObjectName("fileSizeLabel")
+        form.addWidget(make_label("Size:"), 2, 0)
+        form.addWidget(self.file_size_label, 2, 1, 1, 2)
+
         self.category_combo = QComboBox()
-        self.category_combo.addItems(["Other", "Video", "Music", "Compressed", "Documents", "Programs"])
+        self.category_combo.addItems(
+            ["Other", "Video", "Pictures", "Music", "Programs", "Compressed", "Documents"]
+        )
         self.category_combo.currentTextChanged.connect(self._on_category_changed)
+        form.addWidget(make_label("Cat:"), 3, 0)
+        form.addWidget(self.category_combo, 3, 1, 1, 2)
 
-        conn_lbl = QLabel("Max Connections:")
-        conn_lbl.setObjectName("fieldLabel")
+        self.save_to_combo = QComboBox()
+        self.save_to_combo.setEditable(True)
+        self.save_to_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.save_to_combo.setMinimumContentsLength(36)
+        self._populate_save_directories()
+        self.dir_input = self.save_to_combo.lineEdit()
+        self.dir_input.setObjectName("saveDirectoryInput")
+        self.dir_input.setText(self.default_save_dir)
+        self.browse_btn = QToolButton()
+        self.browse_btn.setObjectName("browseBtn")
+        self.browse_btn.setIcon(self.style().standardIcon(QStyle.SP_DirOpenIcon))
+        self.browse_btn.setToolTip("Browse for download folder")
+        self.browse_btn.clicked.connect(self._on_browse_dir)
+        save_to_layout = QHBoxLayout()
+        save_to_layout.setContentsMargins(0, 0, 0, 0)
+        save_to_layout.setSpacing(6)
+        save_to_layout.addWidget(self.save_to_combo, 1)
+        save_to_layout.addWidget(self.browse_btn)
+        form.addWidget(make_label("Save To:"), 4, 0)
+        form.addLayout(save_to_layout, 4, 1, 1, 2)
+        root_layout.addLayout(form)
+
+        self.advanced_btn = QToolButton()
+        self.advanced_btn.setObjectName("advancedBtn")
+        self.advanced_btn.setText("More options")
+        self.advanced_btn.setCheckable(True)
+        self.advanced_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.advanced_btn.setArrowType(Qt.RightArrow)
+        self.advanced_btn.toggled.connect(self._toggle_advanced_options)
+        root_layout.addWidget(self.advanced_btn, alignment=Qt.AlignLeft)
+
+        self.advanced_panel = QWidget()
+        advanced_layout = QHBoxLayout(self.advanced_panel)
+        advanced_layout.setContentsMargins(0, 0, 0, 0)
+        advanced_layout.addWidget(make_label("Connections:"))
         self.connections_spin = QSpinBox()
         self.connections_spin.setRange(1, 32)
         default_conns = int(self.db.get_setting("default_connections", "8")) if self.db else 8
         self.connections_spin.setValue(default_conns)
-
-        grid.addWidget(cat_lbl, 2, 0)
-        grid.addWidget(self.category_combo, 2, 1)
-        grid.addWidget(conn_lbl, 2, 2)
-        grid.addWidget(self.connections_spin, 2, 3)
-
-        # Save Directory
-        dir_lbl = QLabel("Save To:")
-        dir_lbl.setObjectName("fieldLabel")
-        dir_layout = QHBoxLayout()
-        dir_layout.setSpacing(8)
-        self.dir_input = QLineEdit(self.default_save_dir)
-        browse_btn = QPushButton("Browse...")
-        browse_btn.setObjectName("browseBtn")
-        browse_btn.clicked.connect(self._on_browse_dir)
-        dir_layout.addWidget(self.dir_input)
-        dir_layout.addWidget(browse_btn)
-
-        grid.addWidget(dir_lbl, 3, 0)
-        grid.addLayout(dir_layout, 3, 1, 1, 3)
-
-        # Remember folder for this category
+        advanced_layout.addWidget(self.connections_spin)
         self.remember_folder_cb = QCheckBox("Remember this folder as default for this category")
-        grid.addWidget(self.remember_folder_cb, 4, 1, 1, 3)
+        advanced_layout.addWidget(self.remember_folder_cb)
+        advanced_layout.addStretch()
+        self.advanced_panel.setVisible(False)
+        root_layout.addWidget(self.advanced_panel)
 
-        root_layout.addWidget(card)
-
-        # Immediate Start Checkbox (hidden, controlled by action buttons)
         self.start_immediately_cb = QCheckBox("Start download immediately")
         self.start_immediately_cb.setChecked(True)
         self.start_immediately_cb.setVisible(False)
-        root_layout.addWidget(self.start_immediately_cb)
 
-        # Playlist detection action button
         self.playlist_btn = QPushButton("📑 Playlist Detected! Click to inspect & select items")
-        self.playlist_btn.setObjectName("browseBtn")
-        self.playlist_btn.setStyleSheet("background-color: #0284c7; color: #ffffff; font-weight: bold; padding: 7px; border-radius: 6px;")
+        self.playlist_btn.setObjectName("startBtn")
         self.playlist_btn.setVisible(False)
         self.playlist_btn.clicked.connect(self._open_playlist_dialog)
         root_layout.addWidget(self.playlist_btn)
 
-        # Error label
         self.error_label = QLabel("")
-        self.error_label.setStyleSheet("color: #ef4444; font-size: 11px;")
+        self.error_label.setStyleSheet("color: #b04444; font-size: 9pt;")
         root_layout.addWidget(self.error_label)
 
-        # Action Buttons (IDM Authentic: Cancel | Download Later | Start Download)
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(10)
-        btn_layout.addStretch()
-
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.setObjectName("cancelBtn")
-        cancel_btn.clicked.connect(self.reject)
 
         self.later_btn = QPushButton("Download Later")
         self.later_btn.setObjectName("laterBtn")
@@ -407,19 +329,54 @@ class AddDownloadDialog(QDialog):
         self.start_btn.setDefault(True)
         self.start_btn.clicked.connect(self._on_start_download)
 
-        btn_layout.addWidget(cancel_btn)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setObjectName("cancelBtn")
+        cancel_btn.clicked.connect(self.reject)
+
         btn_layout.addWidget(self.later_btn)
         btn_layout.addWidget(self.start_btn)
+        btn_layout.addWidget(cancel_btn)
+        root_layout.addSpacing(2)
         root_layout.addLayout(btn_layout)
 
+    @staticmethod
+    def _format_file_size(size: int) -> str:
+        value = float(size)
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if value < 1024 or unit == "TB":
+                return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+            value /= 1024
+
+    def _populate_save_directories(self):
+        directories = [self.default_save_dir]
+        if self.db:
+            for key in (
+                "default_dir",
+                "save_dir_other",
+                "save_dir_video",
+                "save_dir_pictures",
+                "save_dir_music",
+                "save_dir_programs",
+                "save_dir_compressed",
+                "save_dir_documents",
+            ):
+                value = self.db.get_setting(key, "")
+                if value:
+                    directories.append(value)
+        for directory in dict.fromkeys(os.path.normpath(path) for path in directories if path):
+            self.save_to_combo.addItem(directory)
+
+    def _toggle_advanced_options(self, expanded: bool):
+        self.advanced_panel.setVisible(expanded)
+        self.advanced_btn.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+
     def _update_file_icon(self):
-        """Update top-left badge icon based on current category or filename."""
+        """Update the selected category icon from the filename and category."""
         cat = self.category_combo.currentText() if hasattr(self, "category_combo") else "Other"
         fn = self.filename_input.text().strip() if hasattr(self, "filename_input") else ""
-        if not fn and hasattr(self, "url_input"):
-            fn = extract_filename_from_url(self.url_input.text().strip())
-        ico = get_category_icon(cat, fn)
-        self.icon_badge_lbl.setPixmap(ico.pixmap(28, 28))
+        icon = get_category_icon(cat, fn)
+        if icon and not icon.isNull() and hasattr(self, "category_combo"):
+            self.category_combo.setItemIcon(self.category_combo.currentIndex(), icon)
 
     def _on_start_download(self):
         self.start_immediately_cb.setChecked(True)
@@ -491,7 +448,10 @@ class AddDownloadDialog(QDialog):
     def _on_browse_dir(self):
         chosen = QFileDialog.getExistingDirectory(self, "Select Download Directory", self.dir_input.text())
         if chosen:
-            self.dir_input.setText(os.path.abspath(chosen))
+            chosen = os.path.abspath(chosen)
+            if self.save_to_combo.findText(chosen) < 0:
+                self.save_to_combo.addItem(chosen)
+            self.dir_input.setText(chosen)
 
     def _on_submit(self):
         url = self.url_input.text().strip()

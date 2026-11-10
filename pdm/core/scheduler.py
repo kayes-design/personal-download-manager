@@ -3,7 +3,6 @@
 import datetime
 import subprocess
 import threading
-import time
 from typing import Callable, Optional
 
 from pdm.core.coordinator import DownloadCoordinator
@@ -17,13 +16,14 @@ class QueueScheduler:
         self.coordinator = coordinator
         self.db = coordinator.db
 
-        self.enabled: bool = False
-        self.start_time_str: Optional[str] = None  # "HH:MM"
-        self.stop_time_str: Optional[str] = None   # "HH:MM"
-        self.shutdown_when_done: bool = False
+        self.enabled = self.db.get_setting("sched_enabled", "0") == "1"
+        self.start_time_str: Optional[str] = self.db.get_setting("sched_start", "02:00")
+        self.stop_time_str: Optional[str] = self.db.get_setting("sched_stop", "06:00")
+        self.shutdown_when_done = self.db.get_setting("sched_shutdown", "0") == "1"
 
         self._lock = threading.Lock()
         self._running = True
+        self._stop_event = threading.Event()
         self._last_triggered_start_date = None
         self._last_triggered_stop_date = None
 
@@ -58,7 +58,7 @@ class QueueScheduler:
                 self._check_schedule()
             except Exception:
                 pass
-            time.sleep(5)
+            self._stop_event.wait(5)
 
     def _check_schedule(self):
         with self._lock:
@@ -107,3 +107,6 @@ class QueueScheduler:
 
     def stop(self):
         self._running = False
+        self._stop_event.set()
+        if threading.current_thread() is not self._thread:
+            self._thread.join(timeout=1)

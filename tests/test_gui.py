@@ -2,6 +2,8 @@
 
 import os
 import sys
+import threading
+import time
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
@@ -12,6 +14,7 @@ from pdm.gui.add_dialog import AddDownloadDialog, detect_category
 from pdm.gui.integrity_dialog import IntegrityCheckDialog
 from pdm.gui.main_window import MainWindow
 from pdm.gui.models import DownloadsTableModel, format_bytes, format_eta, format_speed
+from pdm.gui.progress_dialog import DownloadProgressDialog
 from pdm.gui.segment_widget import SegmentVisualizerWidget
 from pdm.storage.db import DatabaseManager
 
@@ -47,6 +50,8 @@ def test_detect_category():
     assert detect_category("archive.7z") == "Compressed"
     assert detect_category("document.pdf") == "Documents"
     assert detect_category("song.mp3") == "Music"
+    assert detect_category("photo.jpg") == "Pictures"
+    assert detect_category("photo.webp") == "Pictures"
     assert detect_category("movie.mkv") == "Video"
     assert detect_category("installer.exe") == "Programs"
     assert detect_category("unknown.xyz") == "Other"
@@ -156,6 +161,36 @@ def test_main_window_and_filtering(qapp, tmp_path):
     window.close()
 
 
+def test_progress_dialog_uses_download_category(qapp, tmp_path):
+    db = DatabaseManager(str(tmp_path / "progress_category.db"))
+    task_id = db.create_download(
+        "https://example.com/movie.mp4",
+        str(tmp_path / "movie.mp4"),
+        "movie.mp4",
+        category="Video",
+    )
+    coordinator = DownloadCoordinator(db=db, max_concurrent_downloads=0)
+    task = coordinator.get_active_task(task_id)
+    if task is None:
+        from pdm.core.engine import DownloadTask
+
+        task = DownloadTask(
+            task_id=task_id,
+            url="https://example.com/movie.mp4",
+            destination_path=str(tmp_path / "movie.mp4"),
+            filename="movie.mp4",
+            db=db,
+            category="Video",
+        )
+        coordinator._active_tasks[task_id] = task
+
+    dialog = DownloadProgressDialog(task_id, coordinator)
+    assert dialog.quality_label.text() == "Auto (Highest Available)"
+    dialog._timer.stop()
+    dialog.close()
+    coordinator.shutdown()
+
+
 def test_idm_header_view(qapp):
     from pdm.gui.main_window import IDMHeaderView
     from PySide6.QtWidgets import QTableView
@@ -189,6 +224,93 @@ def test_add_download_dialog_video_folder(qapp, tmp_path):
     dlg.remember_folder_cb.setChecked(True)
     dlg._on_submit()
     assert os.path.normpath(db.get_setting("save_dir_video")) == os.path.normpath(new_custom)
+
+
+def test_add_download_dialog_reference_fields_and_buttons(qapp, tmp_path):
+    dlg = AddDownloadDialog(str(tmp_path), file_size=1536)
+    assert dlg.windowTitle() == "Download File Info"
+    assert dlg.file_size_label.text() == "1.5 KB"
+    assert dlg.category_combo.findText("Pictures") >= 0
+    assert dlg.save_to_combo.isEditable()
+    assert dlg.dir_input is dlg.save_to_combo.lineEdit()
+    assert dlg.browse_btn.toolTip() == "Browse for download folder"
+    assert [button.text() for button in (dlg.later_btn, dlg.start_btn, dlg.findChild(type(dlg.later_btn), "cancelBtn"))] == [
+        "Download Later",
+        "Start Download",
+        "Cancel",
+    ]
+
+    unknown_size_dlg = AddDownloadDialog(str(tmp_path))
+    assert unknown_size_dlg.file_size_label.text() == "Unknown"
+    unknown_size_dlg.url_input.setText("https://example.com/archive.zip")
+    unknown_size_dlg._on_download_later()
+    assert unknown_size_dlg.get_data()[-1] is False
+    unknown_size_dlg.close()
+
+    dlg.url_input.setText("https://example.com/archive.zip")
+    dlg._on_start_download()
+    assert dlg.get_data()[-1] is True
+    dlg.close()
+
+
+def test_sidebar_has_picture_and_status_filters(qapp, tmp_path):
+    db = DatabaseManager(str(tmp_path / "sidebar_filters.db"))
+    statuses = ["Downloading", "Completed", "Paused", "Queued", "Error", "Canceled"]
+    task_ids = []
+    for index, status in enumerate(statuses):
+        task_id = db.create_download(
+            f"https://example.com/{index}.bin",
+            str(tmp_path / f"{index}.bin"),
+            f"{index}.bin",
+        )
+        db.set_download_status(task_id, status)
+        task_ids.append(task_id)
+    picture_id = db.create_download(
+        "https://example.com/picture.png",
+        str(tmp_path / "picture.png"),
+        "picture.png",
+        category="Pictures",
+    )
+
+    coordinator = DownloadCoordinator(db=db, max_concurrent_downloads=0)
+    window = MainWindow(coordinator)
+    root = window.category_tree.topLevelItem(0)
+    categories = root.child(0)
+    status_group = root.child(1)
+    assert categories.text(0) == "Categories"
+    assert [categories.child(i).text(0) for i in range(categories.childCount())] == [
+        "Video",
+        "Pictures",
+        "Music",
+        "Programs",
+        "Compressed",
+        "Documents",
+    ]
+    assert [status_group.child(i).text(0) for i in range(6)] == [
+        "Downloading",
+        "Completed",
+        "Paused",
+        "In Queue",
+        "Failed",
+        "Cancelled",
+    ]
+
+    picture_item = categories.child(1)
+    window._on_category_clicked(picture_item)
+    assert window.table_model.rowCount() == 1
+    assert window.table_model.get_download_at(0)["id"] == picture_id
+    db.delete_download(picture_id)
+
+    for index, status in enumerate(statuses):
+        window._on_category_clicked(status_group.child(index))
+        assert window.current_status == status
+        assert window.table_model.rowCount() == 1
+        assert window.table_model.get_download_at(0)["id"] == task_ids[index]
+
+    coordinator.shutdown()
+    window._refresh_timer.stop()
+    window.scheduler.stop()
+    window.close()
 
 
 def test_download_complete_dialog(qapp, tmp_path):
@@ -277,4 +399,40 @@ def test_playlist_dialog_init(qapp, tmp_path):
     assert len(dlg.get_selected_items()) == 2
 
 
+def test_shutdown_warning_is_dispatched_to_gui_thread(monkeypatch, qapp, tmp_path):
+    from pdm.gui import main_window as main_window_module
 
+    calling_threads = []
+
+    class FakeDialog:
+        def __init__(self, scheduler, parent):
+            calling_threads.append(threading.get_ident())
+
+        def exec(self):
+            return 0
+
+    monkeypatch.setattr(main_window_module, "ShutdownCountdownDialog", FakeDialog)
+    db = DatabaseManager(str(tmp_path / "shutdown-signal.db"))
+    coordinator = DownloadCoordinator(db)
+    window = MainWindow(coordinator)
+    gui_thread_id = threading.get_ident()
+
+    callback_thread = threading.Thread(
+        target=window.scheduler.on_shutdown_countdown_started,
+        args=(60,),
+    )
+    callback_thread.start()
+    callback_thread.join(timeout=2)
+
+    deadline = time.monotonic() + 2
+    while not calling_threads and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+
+    assert not callback_thread.is_alive()
+    assert calling_threads == [gui_thread_id]
+
+    window.scheduler.stop()
+    coordinator.shutdown()
+    window.tray_icon.hide()
+    window.close()

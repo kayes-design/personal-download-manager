@@ -15,6 +15,7 @@ from pdm.core.security import (
     sanitize_filename,
     validate_url,
 )
+from pdm.core.staging import cleanup_task_staging_dir
 from pdm.storage.db import DatabaseManager
 
 
@@ -88,7 +89,8 @@ class DownloadCoordinator:
         connections_count: int = 8,
         auto_start: bool = True,
         cookies: str = "",
-        referer: str = ""
+        referer: str = "",
+        cookie_jar: str = ""
     ) -> int:
         """Validate, register in DB, and optionally queue for download."""
         ok, valid_url = validate_url(url)
@@ -96,24 +98,7 @@ class DownloadCoordinator:
             raise ValueError(f"Invalid URL: {valid_url}")
 
         if not filename:
-            # Derive filename from URL first
             filename = extract_filename_from_url(valid_url)
-            # If still generic fallback, missing extension, or no filename, try yt_dlp
-            ext_missing = os.path.splitext(filename)[1] == ""
-            if not filename or filename == "download.bin" or ext_missing:
-                try:
-                    from yt_dlp import YoutubeDL
-                    ydl_opts = {"quiet": True, "skip_download": True}
-                    with YoutubeDL(ydl_opts) as ydl:
-                        info = ydl.extract_info(valid_url, download=False)
-                        title = info.get("title")
-                        if title:
-                            # Preserve original extension if any, otherwise default to .mp4
-                            ext = os.path.splitext(filename)[1] or ".mp4"
-                            filename = sanitize_filename(f"{title}{ext}")
-                except Exception:
-                    # Keep whatever filename we have
-                    pass
         else:
             filename = sanitize_filename(filename)
 
@@ -127,7 +112,8 @@ class DownloadCoordinator:
             category=category,
             connections_count=connections_count,
             cookies=cookies,
-            referer=referer
+            referer=referer,
+            cookie_jar=cookie_jar
         )
 
         if auto_start:
@@ -205,6 +191,7 @@ class DownloadCoordinator:
                         except Exception:
                             pass
                 self.db.clear_segments(task_id)
+                cleanup_task_staging_dir(record["destination_path"], task_id)
 
     def delete_download(self, task_id: int, delete_files: bool = False):
         """Remove task from DB completely."""
@@ -313,10 +300,12 @@ class DownloadCoordinator:
                     progress_callback=self._handle_task_progress,
                     status_callback=self._handle_task_status,
                     cookies=item.get("cookies", ""),
+                    cookie_jar=item.get("cookie_jar", ""),
                     referer=item.get("referer", ""),
                     user_agent=item.get("user_agent", ""),
                     origin=item.get("origin", ""),
-                    proxy=effective_proxy or None
+                    proxy=effective_proxy or None,
+                    category=item.get("category") or "Other"
                 )
                 self._active_tasks[task_id] = task
 

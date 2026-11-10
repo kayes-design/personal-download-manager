@@ -78,6 +78,7 @@ class DatabaseManager:
                 filename TEXT DEFAULT '',
                 category TEXT DEFAULT 'Other',
                 cookies TEXT DEFAULT '',
+                cookie_jar TEXT DEFAULT '',
                 referer TEXT DEFAULT '',
                 user_agent TEXT DEFAULT '',
                 origin TEXT DEFAULT '',
@@ -97,6 +98,7 @@ class DatabaseManager:
                 ("description", "TEXT DEFAULT ''"),
                 ("queue_name", "TEXT DEFAULT ''"),
                 ("cookies", "TEXT DEFAULT ''"),
+                ("cookie_jar", "TEXT DEFAULT ''"),
                 ("referer", "TEXT DEFAULT ''"),
                 ("user_agent", "TEXT DEFAULT ''"),
                 ("origin", "TEXT DEFAULT ''"),
@@ -109,6 +111,10 @@ class DatabaseManager:
 
             try:
                 conn.execute("ALTER TABLE incoming_requests ADD COLUMN download_id INTEGER DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn.execute("ALTER TABLE incoming_requests ADD COLUMN cookie_jar TEXT DEFAULT ''")
             except sqlite3.OperationalError:
                 pass
 
@@ -127,15 +133,16 @@ class DatabaseManager:
         referer: str = "",
         user_agent: str = "",
         origin: str = "",
-        proxy: str = ""
+        proxy: str = "",
+        cookie_jar: str = ""
     ) -> int:
         with self._lock, self._get_connection() as conn:
             cur = conn.execute(
                 """
-                INSERT INTO downloads (url, destination_path, filename, category, connections_count, status, description, queue_name, cookies, referer, user_agent, origin, proxy)
-                VALUES (?, ?, ?, ?, ?, 'Queued', ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO downloads (url, destination_path, filename, category, connections_count, status, description, queue_name, cookies, referer, user_agent, origin, proxy, cookie_jar)
+                VALUES (?, ?, ?, ?, ?, 'Queued', ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (url, destination_path, filename, category, connections_count, description, queue_name, cookies, referer, user_agent, origin, proxy)
+                (url, destination_path, filename, category, connections_count, description, queue_name, cookies, referer, user_agent, origin, proxy, cookie_jar)
             )
             return cur.lastrowid
 
@@ -339,6 +346,13 @@ class DatabaseManager:
                 (start_byte, end_byte, segment_id)
             )
 
+    def update_segment_temp_filepath(self, segment_id: int, temp_filepath: str):
+        with self._lock, self._get_connection() as conn:
+            conn.execute(
+                "UPDATE segments SET temp_filepath = ? WHERE id = ?",
+                (temp_filepath, segment_id)
+            )
+
     def clear_segments(self, download_id: int):
         with self._lock, self._get_connection() as conn:
             conn.execute("DELETE FROM segments WHERE download_id = ?", (download_id,))
@@ -371,15 +385,16 @@ class DatabaseManager:
         origin: str = "",
         proxy: str = "",
         auto_start: bool = True,
-        download_id: int = 0
+        download_id: int = 0,
+        cookie_jar: str = ""
     ) -> int:
         with self._lock, self._get_connection() as conn:
             cur = conn.execute(
                 """
-                INSERT INTO incoming_requests (url, filename, category, cookies, referer, user_agent, origin, proxy, auto_start, download_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO incoming_requests (url, filename, category, cookies, cookie_jar, referer, user_agent, origin, proxy, auto_start, download_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (url, filename, category, cookies, referer, user_agent, origin, proxy, 1 if auto_start else 0, download_id)
+                (url, filename, category, cookies, cookie_jar, referer, user_agent, origin, proxy, 1 if auto_start else 0, download_id)
             )
             return cur.lastrowid
 

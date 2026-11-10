@@ -196,6 +196,8 @@ def handle_download_item(db: DatabaseManager, default_dir: str, default_conns: i
             cat = "Music"
         elif ext in (".exe", ".msi", ".dmg", ".pkg", ".deb", ".rpm", ".apk", ".bat", ".cmd", ".appimage"):
             cat = "Programs"
+        elif ext in (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg", ".tif", ".tiff", ".ico", ".heic", ".avif", ".raw", ".cr2", ".nef"):
+            cat = "Pictures"
         elif ext in (".mp4", ".mkv", ".avi", ".mov", ".flv", ".webm", ".wmv", ".ts", ".m4v", ".3gp", ".m3u8", ".mpd"):
             cat = "Video"
         else:
@@ -213,6 +215,11 @@ def handle_download_item(db: DatabaseManager, default_dir: str, default_conns: i
     final_path = resolve_safe_filepath(target_dir, clean_filename)
 
     cookies = item.get("cookies", "")
+    cookie_jar = item.get("cookie_jar", "")
+    try:
+        file_size = max(0, int(item.get("file_size") or item.get("size") or 0))
+    except (TypeError, ValueError):
+        file_size = 0
     referer = item.get("referer", "")
     user_agent = item.get("user_agent", "")
     origin = item.get("origin", "")
@@ -221,10 +228,10 @@ def handle_download_item(db: DatabaseManager, default_dir: str, default_conns: i
     with db._lock, db._get_connection() as conn:
         cur = conn.execute(
             """
-            INSERT INTO downloads (url, destination_path, filename, category, connections_count, status, cookies, referer, user_agent, origin, proxy)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO downloads (url, destination_path, filename, category, connections_count, status, total_bytes, cookies, cookie_jar, referer, user_agent, origin, proxy)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (valid_url, final_path, os.path.basename(final_path), cat, default_conns, status_to_insert, cookies, referer, user_agent, origin, proxy)
+            (valid_url, final_path, os.path.basename(final_path), cat, default_conns, status_to_insert, file_size or -1, cookies, cookie_jar, referer, user_agent, origin, proxy)
         )
         dl_id = cur.lastrowid
 

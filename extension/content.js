@@ -997,7 +997,7 @@
         const menu = overlay.querySelector(".pdm-stream-menu");
         if (menu) menu.classList.remove("pdm-show");
 
-        showPreDownloadCard({
+        startStreamDownload({
           url: stream.url,
           filename: filename,
           resolution: stream.resTag || stream.resolution || "HD Video",
@@ -1048,7 +1048,7 @@
       const filename = baseTitle.toLowerCase().endsWith(ext) ? baseTitle : `${baseTitle}${ext}`;
       const menu = overlay ? overlay.querySelector(".pdm-stream-menu") : null;
       if (menu) menu.classList.remove("pdm-show");
-      showPreDownloadCard({
+      const download = {
         url: target.url,
         filename: filename,
         resolution: target.resTag || target.resolution || "HD Video",
@@ -1057,7 +1057,12 @@
         origin: target.origin || window.location.origin,
         user_agent: target.userAgent || navigator.userAgent,
         cookies: target.cookies || ""
-      });
+      };
+      if (autoStart) {
+        startStreamDownload(download);
+      } else {
+        showPreDownloadCard(download);
+      }
       return;
     }
 
@@ -1091,7 +1096,11 @@
 
     const menu = globalOverlay ? globalOverlay.querySelector(".pdm-stream-menu") : null;
     if (menu) menu.classList.remove("pdm-show");
-    openBatchModal(false, items);
+    if (autoStart) {
+      sendBatchToPDM(items, true);
+    } else {
+      openBatchModal(false, items);
+    }
   }
 
     function sendBatchToPDM(items, autoStart) {
@@ -1168,11 +1177,11 @@
       startTop = rect.top;
 
       // Switch from transform-center to absolute pixel coordinates
-      card.style.transform = "none";
-      card.style.bottom = "auto";
-      card.style.right = "auto";
-      card.style.left = `${startLeft}px`;
-      card.style.top = `${startTop}px`;
+      card.style.setProperty("transform", "none", "important");
+      card.style.setProperty("bottom", "auto", "important");
+      card.style.setProperty("right", "auto", "important");
+      card.style.setProperty("left", `${startLeft}px`, "important");
+      card.style.setProperty("top", `${startTop}px`, "important");
       card.classList.add("pdm-card-dragging");
 
       if (document.body) document.body.style.userSelect = "none";
@@ -1186,13 +1195,13 @@
         let newTop = startTop + dy;
 
         const pad = 8;
-        const maxL = (window.innerWidth || 1920) - rect.width - pad;
-        const maxT = (window.innerHeight || 1080) - rect.height - pad;
+        const maxL = Math.max(pad, (window.innerWidth || 1920) - rect.width - pad);
+        const maxT = Math.max(pad, (window.innerHeight || 1080) - rect.height - pad);
         newLeft = Math.max(pad, Math.min(newLeft, maxL));
         newTop = Math.max(pad, Math.min(newTop, maxT));
 
-        card.style.left = `${newLeft}px`;
-        card.style.top = `${newTop}px`;
+        card.style.setProperty("left", `${newLeft}px`, "important");
+        card.style.setProperty("top", `${newTop}px`, "important");
       }
 
       function onMouseUp() {
@@ -1222,6 +1231,15 @@
     return activeCardEl;
   }
 
+  function centerActiveCard(card) {
+    card.style.setProperty("position", "fixed", "important");
+    card.style.setProperty("left", "50%", "important");
+    card.style.setProperty("top", "50%", "important");
+    card.style.setProperty("transform", "translate(-50%, -50%)", "important");
+    card.style.setProperty("bottom", "auto", "important");
+    card.style.setProperty("right", "auto", "important");
+  }
+
   function getMiniBadge() {
     // Suppressed: User requested zero screen clutter when hidden
     return { style: {} };
@@ -1231,6 +1249,7 @@
   // IDM-Style Duplicate Download Notice Card
   function showDuplicateNoticeCard(existing, opts) {
     const card = getActiveCard();
+    centerActiveCard(card);
     card.style.display = "block";
 
     const filename = existing.filename || opts.filename || "file";
@@ -1322,12 +1341,7 @@
 
   function showPreDownloadCard(opts) {
     const card = getActiveCard();
-    // Default initial position: Centered on screen, draggable anywhere
-    card.style.left = "50%";
-    card.style.top = "50%";
-    card.style.transform = "translate(-50%, -50%)";
-    card.style.bottom = "auto";
-    card.style.right = "auto";
+    centerActiveCard(card);
     card.style.display = "block";
 
     if (activeProgressInterval) {
@@ -1380,25 +1394,7 @@
       const chosenFilename = (inputEl ? inputEl.value.trim() : "") || initialFilename;
       const nowBtn = card.querySelector("#pdm-action-download-now");
       if (nowBtn) nowBtn.innerHTML = "<span>Connecting...</span>";
-      chrome.runtime.sendMessage({
-        action: "download_via_native",
-        url: opts.url,
-        filename: chosenFilename,
-        auto_start: true,
-        force_redownload: forceRedownload,
-        referer: opts.referer || window.location.href,
-        origin: opts.origin || window.location.origin,
-        user_agent: opts.user_agent || navigator.userAgent,
-        cookies: opts.cookies || ""
-      }, (resp) => {
-        if (resp && resp.status === "duplicate" && resp.existing_task) {
-          showDuplicateNoticeCard(resp.existing_task, Object.assign({}, opts, { filename: chosenFilename }));
-        } else if (resp && resp.status === "ok" && resp.data && resp.data.task_ids && resp.data.task_ids.length > 0) {
-          startActiveDownloadHUD(resp.data.task_ids[0], chosenFilename, opts.size || 0);
-        } else {
-          showCardError((resp && resp.error) || "Host connection failed. Check if PDM is running.");
-        }
-      });
+      startStreamDownload(opts, chosenFilename, forceRedownload);
     }
 
     const nowBtn = card.querySelector("#pdm-action-download-now");
@@ -1413,6 +1409,7 @@
         url: opts.url,
         filename: chosenFilename,
         auto_start: false,
+        file_size: opts.size || 0,
         referer: opts.referer || window.location.href,
         origin: opts.origin || window.location.origin,
         user_agent: opts.user_agent || navigator.userAgent,
@@ -1425,6 +1422,30 @@
         }
       });
     };
+  }
+
+  function startStreamDownload(opts, filename = opts.filename, forceRedownload = false) {
+    chrome.runtime.sendMessage({
+      action: "download_via_native",
+      url: opts.url,
+      filename: filename || "",
+      auto_start: true,
+      force_redownload: forceRedownload,
+      file_size: opts.size || 0,
+      referer: opts.referer || window.location.href,
+      origin: opts.origin || window.location.origin,
+      user_agent: opts.user_agent || navigator.userAgent,
+      cookies: opts.cookies || ""
+    }, (resp) => {
+      const runtimeError = chrome.runtime.lastError;
+      if (resp && resp.status === "duplicate" && resp.existing_task) {
+        showDuplicateNoticeCard(resp.existing_task, Object.assign({}, opts, { filename }));
+      } else if (resp && resp.status === "ok" && resp.data && resp.data.task_ids && resp.data.task_ids.length > 0) {
+        startActiveDownloadHUD(resp.data.task_ids[0], filename || "File Download", opts.size || 0);
+      } else {
+        showCardError((resp && resp.error) || (runtimeError && runtimeError.message) || "Host connection failed. Check if PDM is running.");
+      }
+    });
   }
 
   function renderQueuedNotice(filename) {
@@ -1464,6 +1485,7 @@
   function startActiveDownloadHUD(taskId, filename, size) {
     const card = getActiveCard();
     const badge = getMiniBadge();
+    centerActiveCard(card);
     badge.style.display = "none";
     card.style.display = "block";
 
@@ -1572,8 +1594,27 @@
     if (activeProgressInterval) clearInterval(activeProgressInterval);
     activeProgressInterval = setInterval(() => {
       chrome.runtime.sendMessage({ action: "get_task_progress", task_id: taskId }, (res) => {
-        if (!res || res.status !== "ok" || !res.task) return;
+        if (currentActiveTaskId !== taskId) return;
+        if (!res || res.status !== "ok" || !res.task) {
+          clearInterval(activeProgressInterval);
+          activeProgressInterval = null;
+          showCardError((res && res.error) || "Unable to read download progress from PDM.");
+          return;
+        }
         const t = res.task;
+
+        if (t.status === "error") {
+          clearInterval(activeProgressInterval);
+          activeProgressInterval = null;
+          showCardError(t.error || "The download failed.");
+          return;
+        }
+        if (t.status === "canceled") {
+          clearInterval(activeProgressInterval);
+          activeProgressInterval = null;
+          card.style.display = "none";
+          return;
+        }
 
         // Update Progress Bar
         const bar = document.getElementById("pdm-hud-bar");
@@ -1602,6 +1643,23 @@
 
         const miniSpd = document.getElementById("pdm-mini-spd");
         if (miniSpd) miniSpd.innerText = t.speed_formatted;
+
+        const statusEl = document.getElementById("pdm-hud-status");
+        if (t.status === "paused" || t.status === "queued") {
+          isPaused = true;
+          if (pauseLbl) pauseLbl.innerText = t.status === "queued" ? "▶️ Start" : "▶️ Resume";
+          if (statusEl) {
+            statusEl.className = "pdm-card-status-pill pdm-status-paused";
+            statusEl.innerText = t.status === "queued" ? "Queued" : "Paused";
+          }
+        } else if (t.status === "downloading") {
+          isPaused = false;
+          if (pauseLbl) pauseLbl.innerText = "⏸️ Pause";
+          if (statusEl) {
+            statusEl.className = "pdm-card-status-pill pdm-status-downloading";
+            statusEl.innerText = "Downloading ⚡";
+          }
+        }
 
         // Check if finished
         if (t.status === "completed" || t.progress >= 100) {
@@ -1661,6 +1719,8 @@
 
   function showCardError(errMsg) {
     const card = getActiveCard();
+    centerActiveCard(card);
+    card.style.display = "block";
     card.innerHTML = `
       <div class="pdm-card-header" title="Drag to move anywhere">
         <div class="pdm-card-brand">

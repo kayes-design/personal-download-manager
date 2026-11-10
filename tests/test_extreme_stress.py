@@ -7,6 +7,7 @@ import time
 import tempfile
 import pytest
 
+from pdm.core import limiter as limiter_module
 from pdm.core.security import (
     sanitize_filename,
     validate_url,
@@ -142,6 +143,20 @@ class TestExtremeSecurity:
 class TestExtremeEngineAndConcurrency:
     """Extreme concurrency and stress tests on engine components."""
 
+    def test_speed_limiter_accepts_requests_larger_than_bucket(self, monkeypatch):
+        clock = [0.0]
+        monkeypatch.setattr(limiter_module.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(
+            limiter_module.time,
+            "sleep",
+            lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+        )
+
+        limiter = SpeedLimiter(1024)
+        limiter.acquire(128 * 1024)
+
+        assert clock[0] == pytest.approx(127.0)
+
     def test_speed_limiter_multithreaded_stress(self):
         """Stress test SpeedLimiter with 20 parallel threads."""
         limiter = SpeedLimiter(500_000)  # 500 KB/s limit
@@ -181,7 +196,8 @@ class TestExtremeEngineAndConcurrency:
                             destination_path=os.path.join(temp_dir, f"file_{thread_id}_{i}.bin"),
                             filename=f"file_{thread_id}_{i}.bin"
                         )
-                        db.update_download_progress(tid, i * 100, 1500)
+                        db.update_download_metadata(tid, 1500, None, None, False)
+                        db.update_download_progress(tid, i * 100)
                         db.set_download_status(tid, "Downloading")
                 except Exception as e:
                     errors.append(e)

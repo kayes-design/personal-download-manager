@@ -81,6 +81,37 @@ def create_document_icon() -> QIcon:
     return QIcon(pix)
 
 
+def create_picture_icon() -> QIcon:
+    """Landscape thumbnail icon for picture downloads."""
+    pix = QPixmap(20, 20)
+    pix.fill(Qt.transparent)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setBrush(QColor("#dbeafe"))
+    p.setPen(QColor("#60a5fa"))
+    p.drawRoundedRect(2, 3, 16, 14, 2, 2)
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor("#22c55e"))
+    p.drawPolygon(QPolygon([QPoint(4, 15), QPoint(9, 9), QPoint(13, 13), QPoint(15, 11), QPoint(18, 15)]))
+    p.setBrush(QColor("#f59e0b"))
+    p.drawEllipse(5, 5, 3, 3)
+    p.end()
+    return QIcon(pix)
+
+
+def create_status_icon(color: str) -> QIcon:
+    """Small colored status bullet matching the category sidebar."""
+    pix = QPixmap(12, 12)
+    pix.fill(Qt.transparent)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(color))
+    p.drawEllipse(2, 2, 8, 8)
+    p.end()
+    return QIcon(pix)
+
+
 def create_music_icon() -> QIcon:
     """Music eighth-notes icon in vibrant rose/magenta for optimal contrast on blue selection."""
     pix = QPixmap(20, 20)
@@ -201,4 +232,3 @@ def create_queue_icon() -> QIcon:
 
     p.end()
     return QIcon(pix)
-

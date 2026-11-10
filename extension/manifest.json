@@ -49,6 +49,19 @@
       "css": ["floating.css"],
       "run_at": "document_idle",
       "all_frames": true
+    },
+    {
+      "matches": [
+        "*://*.facebook.com/*",
+        "*://facebook.com/*",
+        "*://*.fb.com/*",
+        "*://fb.com/*",
+        "*://*.fb.watch/*",
+        "*://fb.watch/*"
+      ],
+      "js": ["content.js"],
+      "css": ["floating.css"],
+      "run_at": "document_idle"
     }
   ]
 }

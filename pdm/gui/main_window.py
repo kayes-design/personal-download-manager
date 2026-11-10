@@ -286,6 +286,7 @@ class MainWindow(QMainWindow):
 
     download_started_signal = Signal(int)
     download_completed_signal = Signal(dict)
+    shutdown_countdown_signal = Signal(int)
 
     def __init__(self, coordinator: DownloadCoordinator):
         super().__init__()
@@ -317,7 +318,8 @@ class MainWindow(QMainWindow):
         self.coordinator.on_status_changed = self._on_task_status_changed
         self.download_started_signal.connect(self._on_download_started_gui)
         self.download_completed_signal.connect(self._on_download_completed_gui)
-        self.scheduler.on_shutdown_countdown_started = self._show_shutdown_warning
+        self.shutdown_countdown_signal.connect(self._show_shutdown_warning)
+        self.scheduler.on_shutdown_countdown_started = self.shutdown_countdown_signal.emit
 
         # Periodic UI table refresh (250ms)
         self._refresh_timer = QTimer(self)
@@ -790,59 +792,68 @@ class MainWindow(QMainWindow):
             create_document_icon,
             create_folder_icon,
             create_music_icon,
+            create_picture_icon,
             create_programs_icon,
+            create_status_icon,
             create_video_icon,
         )
 
         sub_categories = [
-            ("Compressed", "Compressed", create_compressed_icon()),
-            ("Documents", "Documents", create_document_icon()),
+            ("Video", "Video", create_video_icon()),
+            ("Pictures", "Pictures", create_picture_icon()),
             ("Music", "Music", create_music_icon()),
             ("Programs", "Programs", create_programs_icon()),
-            ("Video", "Video", create_video_icon()),
+            ("Compressed", "Compressed", create_compressed_icon()),
+            ("Documents", "Documents", create_document_icon()),
         ]
 
-        # 1. All Downloads (Parent, Expanded by default with [-])
         all_root = QTreeWidgetItem(["All Downloads"])
         all_root.setIcon(0, create_folder_icon())
         all_root.setData(0, Qt.UserRole, ("All", "All"))
         self.category_tree.addTopLevelItem(all_root)
 
+        categories_header = QTreeWidgetItem(["Categories"])
+        categories_header.setFlags(Qt.ItemIsEnabled)
+        category_font = categories_header.font(0)
+        category_font.setBold(True)
+        categories_header.setFont(0, category_font)
+        all_root.addChild(categories_header)
+
         for label, cat_key, icon in sub_categories:
             child = QTreeWidgetItem([label])
             child.setIcon(0, icon)
             child.setData(0, Qt.UserRole, ("All", cat_key))
-            all_root.addChild(child)
+            categories_header.addChild(child)
 
+        status_header = QTreeWidgetItem(["Status"])
+        status_header.setFlags(Qt.ItemIsEnabled)
+        status_font = status_header.font(0)
+        status_font.setBold(True)
+        status_header.setFont(0, status_font)
+        all_root.addChild(status_header)
+
+        statuses = [
+            ("Downloading", "Downloading", "#1683c4"),
+            ("Completed", "Completed", "#20a47a"),
+            ("Paused", "Paused", "#d9a324"),
+            ("In Queue", "Queued", "#68727c"),
+            ("Failed", "Error", "#b94c4c"),
+            ("Cancelled", "Canceled", "#59636d"),
+        ]
+        for label, status, color in statuses:
+            child = QTreeWidgetItem([label])
+            child.setIcon(0, create_status_icon(color))
+            child.setData(0, Qt.UserRole, (status, "All"))
+            status_header.addChild(child)
+
+        for label, status in (("Unfinished", "Unfinished"), ("Finished", "Finished")):
+            child = QTreeWidgetItem([label])
+            child.setData(0, Qt.UserRole, (status, "All"))
+            status_header.addChild(child)
+
+        categories_header.setExpanded(True)
+        status_header.setExpanded(True)
         all_root.setExpanded(True)
-
-        # 2. Unfinished (Parent, Collapsed by default with [+])
-        unfin_root = QTreeWidgetItem(["Unfinished"])
-        unfin_root.setIcon(0, create_folder_icon(badge="down"))
-        unfin_root.setData(0, Qt.UserRole, ("Unfinished", "All"))
-        self.category_tree.addTopLevelItem(unfin_root)
-
-        for label, cat_key, icon in sub_categories:
-            child = QTreeWidgetItem([label])
-            child.setIcon(0, icon)
-            child.setData(0, Qt.UserRole, ("Unfinished", cat_key))
-            unfin_root.addChild(child)
-
-        unfin_root.setExpanded(False)
-
-        # 3. Finished (Parent, Collapsed by default with [+])
-        fin_root = QTreeWidgetItem(["Finished"])
-        fin_root.setIcon(0, create_folder_icon(badge="check"))
-        fin_root.setData(0, Qt.UserRole, ("Finished", "All"))
-        self.category_tree.addTopLevelItem(fin_root)
-
-        for label, cat_key, icon in sub_categories:
-            child = QTreeWidgetItem([label])
-            child.setIcon(0, icon)
-            child.setData(0, Qt.UserRole, ("Finished", cat_key))
-            fin_root.addChild(child)
-
-        fin_root.setExpanded(False)
 
         self.category_tree.setCurrentItem(all_root)
 
@@ -960,6 +971,7 @@ class MainWindow(QMainWindow):
                 filename = (rec.get("filename") if rec else None) or req.get("filename") or extract_filename_from_url(url)
                 cat = (rec.get("category") if rec else None) or req.get("category", "Other")
                 cookies = req.get("cookies", "") or (rec.get("cookies") if rec else "")
+                cookie_jar = req.get("cookie_jar", "") or (rec.get("cookie_jar") if rec else "")
                 referer = req.get("referer", "") or (rec.get("referer") if rec else "")
                 user_agent = req.get("user_agent", "") or (rec.get("user_agent") if rec else "")
                 origin = req.get("origin", "") or (rec.get("origin") if rec else "")
@@ -976,6 +988,8 @@ class MainWindow(QMainWindow):
                         prefill_filename=filename,
                         prefill_category=cat,
                         cookies=cookies,
+                        cookie_jar=cookie_jar,
+                        file_size=(rec.get("total_bytes") if rec else 0) or req.get("file_size", 0),
                         referer=referer,
                         user_agent=user_agent,
                         origin=origin,
@@ -1021,6 +1035,7 @@ class MainWindow(QMainWindow):
                                 auto_start=dl_auto,
                                 cookies=dlg.cookies,
                                 referer=dlg.referer,
+                                cookie_jar=dlg.cookie_jar,
                                 user_agent=dlg.user_agent,
                                 origin=dlg.origin,
                                 proxy=dlg.proxy

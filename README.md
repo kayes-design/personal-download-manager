@@ -30,6 +30,7 @@ Unlike legacy download managers that rely on outdated Windows 98-era user interf
 ### 🚀 High-Speed Acceleration & Segmentation Engine
 * **Dynamic Connection Slicing:** Automatically splits files into parallel network streams (configurable up to 32 connections) utilizing RFC 7233 HTTP Range requests.
 * **Fail-Safe Crash Resumption:** State is checkpointed to an ACID-compliant local SQLite database in WAL mode every 250ms. Interrupted or dropped downloads resume seamlessly by validating `ETag` and `Last-Modified` headers.
+* **Safe File Publishing:** Incomplete downloads stay in a hidden same-volume staging folder; the final filename appears in the destination folder only after the download or media merge succeeds.
 * **Single-Connection Fallback:** Automatically detects servers that do not support partial content ranges and smoothly falls back to reliable single-stream linear downloading.
 * **Token-Bucket Bandwidth Limiter:** Global and per-task throttling controls to keep network bandwidth available for work or streaming.
 * **Cryptographic Checksum Verifier:** Integrated SHA-256 and MD5 integrity verification directly from the GUI.
@@ -48,9 +49,12 @@ Unlike legacy download managers that rely on outdated Windows 98-era user interf
 * **Floating Video Action Button:** Compact, unobtrusive SVG icon button hovering over HTML5 video players on popular media portals and streaming sites.
 * **Multi-Stream Resolution Selector:** Discovers all available video streams, audio tracks, and subtitles (HLS `.m3u8`, DASH `.mpd`, MP4, WebM, 1080p, 720p, 4K).
 * **Social Media Title Sanitizer:** Automatically cleans noisy view counts, reactions, and timestamps from video titles on Facebook, YouTube, Instagram Reels, and TikTok to generate clean filenames.
+* **Browser Session Support:** For sites where you are already signed in, the extension can pass the originating page and correctly scoped browser cookies to the media extractor. Downloads still depend on the site's available formats and access rules; DRM-protected media is not supported.
 * **HTMLMediaElement Prototype Hook:** Intercepts dynamically created video players in complex Single Page Applications (SPAs) the moment `.play()` or `.load()` is invoked.
 * **Video Playing Smart Dimming:** Fades button opacity to `0.28` during playback to eliminate viewing distraction, instantly restoring full opacity upon pause or hover.
 * **Fullscreen Auto-Hide:** Automatically hides all overlays and HUD widgets during fullscreen HTML5 video playback.
+* **Download Categories & Status Filters:** Organizes Pictures, Video, Music, Programs, and Compressed files, with direct filters for downloading, completed, paused, queued, failed, and cancelled tasks.
+* **IDM-Style Download File Info:** Shows URL, name, size, category, editable save location, and Download Later / Start Download / Cancel actions in a compact dialog.
 
 ---
 

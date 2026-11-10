@@ -247,7 +247,7 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
 // 4. Enhanced Media & Stream Sniffer (HLS, DASH, Direct Video/Audio)
 chrome.webRequest.onHeadersReceived.addListener(
   (details) => {
-    if (!details.tabId || details.tabId < 0) return;
+    if (details.tabId == null || details.tabId < 0) return;
 
     const lowerUrl = details.url.toLowerCase();
 
@@ -331,26 +331,29 @@ chrome.webRequest.onHeadersReceived.addListener(
       const userAgent = reqMeta.userAgent || navigator.userAgent;
       const cookies = reqMeta.cookie || "";
 
-      const mediaPayload = {
-        type: "PDM_MEDIA_DETECTED",
-        data: {
-          url: details.url,
-          type: contentType.split(";")[0] || "video/mp4",
-          size: exactOrChunkSize,
-          label: resInfo ? resInfo.full : getStreamLabel(details.url, contentType),
-          resolution: resInfo ? resInfo.full : "",
-          resTag: resInfo ? resInfo.tag : "",
-          referer: referer,
-          origin: origin,
-          userAgent: userAgent,
-          cookies: cookies
-        }
-      };
+      getCookieBundle(details.url, referer).then((cookieBundle) => {
+        const mediaPayload = {
+          type: "PDM_MEDIA_DETECTED",
+          data: {
+            url: details.url,
+            type: contentType.split(";")[0] || "video/mp4",
+            size: exactOrChunkSize,
+            label: resInfo ? resInfo.full : getStreamLabel(details.url, contentType),
+            resolution: resInfo ? resInfo.full : "",
+            resTag: resInfo ? resInfo.tag : "",
+            referer: referer,
+            origin: origin,
+            userAgent: userAgent,
+            cookies: cookies || cookieBundle.cookies,
+            cookieJar: cookieBundle.cookieJar
+          }
+        };
 
-      if (details.frameId > 0) {
-        chrome.tabs.sendMessage(details.tabId, mediaPayload, { frameId: details.frameId }).catch(() => {});
-      }
-      chrome.tabs.sendMessage(details.tabId, mediaPayload, { frameId: 0 }).catch(() => {});
+        if (details.frameId > 0) {
+          chrome.tabs.sendMessage(details.tabId, mediaPayload, { frameId: details.frameId }).catch(() => {});
+        }
+        chrome.tabs.sendMessage(details.tabId, mediaPayload, { frameId: 0 }).catch(() => {});
+      }).catch(() => {});
     }
   },
   { urls: ["http://*/*", "https://*/*"], types: ["media", "xmlhttprequest", "other"] },
@@ -407,24 +410,50 @@ function getStreamLabel(url, contentType) {
   return "Video Stream";
 }
 
-// Helper to extract session cookies for URL
-async function getCookiesForUrl(targetUrl) {
-  try {
-    if (!chrome.cookies || !targetUrl || !targetUrl.startsWith("http")) return "";
-    const cookies = await chrome.cookies.getAll({ url: targetUrl });
-    if (!cookies || cookies.length === 0) return "";
-    return cookies.map((c) => `${c.name}=${c.value}`).join("; ");
-  } catch (e) {
-    return "";
+async function getCookieBundle(targetUrl, pageUrl = "") {
+  const cookiesForUrl = async (url) => {
+    if (!chrome.cookies || !url || !url.startsWith("http")) return [];
+    try {
+      return await chrome.cookies.getAll({ url });
+    } catch (e) {
+      return [];
+    }
+  };
+  const [targetCookies, pageCookies] = await Promise.all([
+    cookiesForUrl(targetUrl),
+    pageUrl === targetUrl ? Promise.resolve([]) : cookiesForUrl(pageUrl)
+  ]);
+  const unique = new Map();
+  for (const cookie of [...targetCookies, ...pageCookies]) {
+    unique.set(`${cookie.domain}\t${cookie.path}\t${cookie.name}`, cookie);
   }
+  const cookieJar = [
+    "# Netscape HTTP Cookie File",
+    ...Array.from(unique.values(), (cookie) => {
+      const domain = String(cookie.domain || "").replace(/[\r\n\t]/g, "");
+      const path = String(cookie.path || "/").replace(/[\r\n\t]/g, "");
+      const name = String(cookie.name || "").replace(/[\r\n\t]/g, "");
+      const value = String(cookie.value || "").replace(/[\r\n\t]/g, "");
+      const includeSubdomains = domain.startsWith(".") ? "TRUE" : "FALSE";
+      const secure = cookie.secure ? "TRUE" : "FALSE";
+      const expires = cookie.session ? 0 : Math.floor(cookie.expirationDate || 0);
+      const cookieDomain = cookie.httpOnly ? `#HttpOnly_${domain}` : domain;
+      return [cookieDomain, includeSubdomains, path || "/", secure, expires, name, value].join("\t");
+    })
+  ].join("\n");
+  return {
+    cookies: targetCookies.map((cookie) => `${cookie.name}=${cookie.value}`).join("; "),
+    cookieJar: unique.size ? `${cookieJar}\n` : ""
+  };
 }
 
 // 6. Native Messaging Communication & Card Hub Dispatcher
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "download_via_native") {
     (async () => {
-      const cookies = message.cookies || (await getCookiesForUrl(message.url));
       const referer = message.referer || (sender.tab && sender.tab.url) || "";
+      const cookieBundle = await getCookieBundle(message.url, referer);
+      const cookies = message.cookies || cookieBundle.cookies;
       const origin = message.origin || "";
       const userAgent = message.user_agent || navigator.userAgent;
       const proxy = message.proxy || (await getActiveBrowserProxy());
@@ -437,7 +466,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           filename: message.filename || "",
           auto_start: message.auto_start !== false,
           force_redownload: message.force_redownload === true,
+          file_size: message.file_size || 0,
           cookies: cookies,
+          cookie_jar: message.cookie_jar || cookieBundle.cookieJar,
           referer: referer,
           user_agent: userAgent,
           origin: origin,
@@ -476,7 +507,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (chrome.runtime.lastError) {
           sendResponse({ status: "error", error: chrome.runtime.lastError.message });
         } else {
-          sendResponse({ status: "ok", data: response });
+          sendResponse(response || { status: "error", error: "No response from PDM native host." });
         }
       }
     );
@@ -549,11 +580,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const activeProxy = await getActiveBrowserProxy();
 
       for (const it of items) {
-        if (!it.cookies && it.url) {
-          it.cookies = await getCookiesForUrl(it.url);
-        }
         if (!it.referer) {
           it.referer = defaultReferer;
+        }
+        const cookieBundle = await getCookieBundle(it.url, it.referer);
+        if (!it.cookies) {
+          it.cookies = cookieBundle.cookies;
+        }
+        if (!it.cookie_jar) {
+          it.cookie_jar = cookieBundle.cookieJar;
         }
         if (!it.origin) {
           it.origin = defaultOrigin;
@@ -619,7 +654,7 @@ async function getActiveBrowserProxy() {
 
 // 8. Send message via Native Messaging host to PDM desktop application
 async function sendToPDM(url, filename, autoStart = true, referer = "", activeTabId = null) {
-  const cookies = await getCookiesForUrl(url);
+  const cookieBundle = await getCookieBundle(url, referer);
   const proxy = await getActiveBrowserProxy();
   let origin = "";
   try {
@@ -635,7 +670,8 @@ async function sendToPDM(url, filename, autoStart = true, referer = "", activeTa
       url: url,
       filename: filename,
       auto_start: autoStart,
-      cookies: cookies,
+      cookies: cookieBundle.cookies,
+      cookie_jar: cookieBundle.cookieJar,
       referer: referer,
       user_agent: navigator.userAgent,
       origin: origin,
